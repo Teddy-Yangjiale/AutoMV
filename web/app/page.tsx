@@ -50,6 +50,9 @@ export default function Home() {
   const [dim, setDim] = useState(38);
   const [motion, setMotion] = useState(12);
   const [audioName, setAudioName] = useState("等待载入歌曲");
+  const [lrcName, setLrcName] = useState("lyrics.lrc");
+  const [backgroundName, setBackgroundName] = useState("background.png");
+  const [offsetSeconds, setOffsetSeconds] = useState(0);
   const [subtitleStyle, setSubtitleStyle] = useState<(typeof subtitleStyles)[number]["id"]>("elegant");
   const [fontSize, setFontSize] = useState(56);
   const [letterSpacing, setLetterSpacing] = useState(8);
@@ -85,12 +88,14 @@ export default function Home() {
     if (ownedUrl.current) URL.revokeObjectURL(ownedUrl.current);
     const url = URL.createObjectURL(file);
     ownedUrl.current = url;
+    setBackgroundName(file.name);
     setBackground({ kind: file.type.startsWith("video/") ? "video" : "image", url });
   }
 
   function chooseLyrics(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
+    setLrcName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const lines = String(reader.result ?? "")
@@ -106,12 +111,31 @@ export default function Home() {
     reader.readAsText(file);
   }
 
+  function downloadProject() {
+    const dimensions = ratio === "16:9" ? [1920, 1080] : ratio === "9:16" ? [1080, 1920] : [1080, 1080];
+    const project = {
+      version: 1,
+      audio: { file: audioName === "等待载入歌曲" ? "song.wav" : audioName, offsetSeconds },
+      lyrics: { file: lrcName },
+      canvas: { ratio, width: dimensions[0], height: dimensions[1], fps: 30 },
+      background: { kind: background.kind, file: background.kind === "gradient" ? null : backgroundName, dim: dim / 100, motionStrength: motion / 30, loopSeconds: 12 },
+      subtitles: { style: subtitleStyle, fontFamily: chosenSubtitle.font, fontSize, letterSpacingEm: letterSpacing / 100, yPercent: subtitleY, align: subtitleAlign, textColor, accentColor, showContext: true },
+      render: { crf: 18, preset: "medium", audioBitrate: "320k" },
+    };
+    const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = "automv-project.json";
+    link.click();
+    URL.revokeObjectURL(blobUrl);
+  }
+
   return (
     <main className="studio-shell">
       <header className="topbar">
         <a className="brand" href="#" aria-label="AutoMV Studio home"><span className="brand-mark">A</span><span>AutoMV <b>Studio</b></span></a>
         <div className="project-title"><span className="status-dot" />未命名歌词 MV <span className="saved">已自动保存</span></div>
-        <div className="top-actions"><button className="ghost-button">帮助</button><button className="export-button"><Icon name="download" /> 导出 MV</button></div>
+        <div className="top-actions"><button className="ghost-button">帮助</button><button className="export-button" onClick={downloadProject}><Icon name="download" /> 导出配置</button></div>
       </header>
 
       <section className="workspace">
@@ -131,6 +155,7 @@ export default function Home() {
           <label className="upload-row"><span className="file-kind audio">♪</span><span><b>歌曲音频</b><small>{audioName}</small></span><input type="file" accept="audio/mp3,audio/wav,audio/*" onChange={(event) => setAudioName(event.target.files?.[0]?.name ?? "等待载入歌曲")} /><em>选择</em></label>
           <label className="upload-row"><span className="file-kind">L</span><span><b>LRC 歌词</b><small>{lyrics === sampleLyrics ? "使用示例歌词" : `${lyrics.length} 行已载入`}</small></span><input type="file" accept=".lrc,text/plain" onChange={chooseLyrics} /><em>选择</em></label>
           <label className="upload-row"><span className="file-kind image">▧</span><span><b>背景素材</b><small>图片或循环视频</small></span><input type="file" accept="image/*,video/*" onChange={chooseBackground} /><em>选择</em></label>
+          <label className="number-field"><span><b>歌曲开始时间 x</b><small>LRC 时间统一加上 x</small></span><div><input type="number" min="0" step="0.01" value={offsetSeconds} onChange={(event) => setOffsetSeconds(Number(event.target.value))} /><em>秒</em></div></label>
 
           <div className="divider" />
           <div className="section-title"><span><Icon name="layers" /> 画布</span></div>

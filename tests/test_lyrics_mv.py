@@ -2,7 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lyrics_mv import LyricLine, _image_background_filter, apply_offset, build_ass, parse_lrc
+from lyrics_mv import (
+    LyricLine,
+    _image_background_filter,
+    _video_background_filter,
+    apply_offset,
+    build_ass,
+    parse_lrc,
+)
 
 
 class LrcParsingTests(unittest.TestCase):
@@ -71,6 +78,31 @@ class LrcParsingTests(unittest.TestCase):
         self.assertIn("2*PI*on/360.000000", value)
         self.assertIn("1-cos", value)
         self.assertIn("black@0.240", value)
+
+    def test_neon_style_and_position_are_written_to_ass(self) -> None:
+        ass = build_ass(
+            [LyricLine(1.0, "夜色发光")],
+            width=1920,
+            height=1080,
+            font_name="Microsoft YaHei",
+            font_size=76,
+            text_color="#FFFFFF",
+            accent_color="#C8FF3D",
+            max_line_duration=8.0,
+            show_context=False,
+            subtitle_style="neon",
+            y_percent=60,
+            alignment="right",
+        )
+        self.assertIn(r"\an6\pos(1690,648)", ass)
+        self.assertIn(r"\blur3.2", ass)
+
+    def test_video_background_is_normalized_before_compositing(self) -> None:
+        value = _video_background_filter(width=1080, height=1920, fps=30, dim=0.38)
+        self.assertIn("scale=1080:1920", value)
+        self.assertIn("crop=1080:1920", value)
+        self.assertIn("fps=30", value)
+        self.assertIn("black@0.380", value)
 
 
 if __name__ == "__main__":

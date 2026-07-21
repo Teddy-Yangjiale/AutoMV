@@ -48,6 +48,7 @@ button { color: inherit; }
 .upload-row em { color: var(--accent); font-size: 9px; font-style: normal; }
 .file-kind { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid #5e4d8b; border-radius: 7px; background: #282139; color: #c5a7ff; font: 700 11px monospace; }
 .file-kind.audio { border-color: #416f5c; background: #1e332b; color: #83e7ba; }.file-kind.image { border-color: #6a5545; background: #33291f; color: #dfb083; }
+.number-field { display:flex; align-items:center; justify-content:space-between; margin-top:10px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:#121318; }.number-field b,.number-field small{display:block}.number-field b{font-size:10px}.number-field small{margin-top:3px;color:#666974;font-size:8px}.number-field>div{display:flex;align-items:center;gap:5px}.number-field input{width:61px;height:28px;padding:0 6px;border:1px solid var(--line);border-radius:6px;outline:0;background:#090a0d;color:#fff;font:10px monospace}.number-field em{color:#666974;font-size:8px;font-style:normal}
 .segmented { display: grid; grid-template-columns: repeat(3,1fr); gap: 3px; padding: 3px; border-radius: 9px; background: #101116; }
 .segmented button { height: 30px; border: 0; border-radius: 7px; background: transparent; color: #686b74; font-size: 10px; cursor: pointer; }
 .segmented button.active { background: #292b33; color: white; box-shadow: 0 1px 4px #000; }

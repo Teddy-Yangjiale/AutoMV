@@ -1,5 +1,26 @@
 # 纯歌词 MV 生成器
 
+现在包含两部分：
+
+- `web/`：参考 PV 编辑器工作流实现的 AutoMV Studio，用于导入素材、选择模板、实时设计字幕并导出项目 JSON。
+- `lyrics_mv.py` / `render_project.py`：权威 FFmpeg 渲染端，负责 offset、ASS 字幕、背景循环、音频封装和最终 MP4。
+
+启动 Studio：
+
+```powershell
+cd web
+pnpm install
+pnpm dev
+```
+
+在 Studio 点击“导出配置”后，将 JSON 与歌曲、LRC、背景素材放在同一目录，然后运行：
+
+```powershell
+python render_project.py automv-project.json -o outputs\final.mp4
+```
+
+字幕与背景的逐层合成方式见 [`docs/COMPOSITING.md`](docs/COMPOSITING.md)。
+
 输入一份 `MP3/WAV` 音频、一份与歌曲本体对齐的 `LRC`，以及歌曲在音频中的已知开始时间 `x`，输出带动态背景和居中歌词动画的 `MP4`。
 
 推荐使用两阶段工作流：
