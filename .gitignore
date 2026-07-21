@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*_render_files/
+
+# User-generated project material
+plan/*
+!plan/.gitkeep
+backgrounds/*
+!backgrounds/.gitkeep
+benchmark/*
+!benchmark/.gitkeep
+outputs/*
+!outputs/.gitkeep

@@ -1,0 +1,664 @@
+#!/usr/bin/env python3
+"""Render a clean lyric MV from an audio file and an LRC timeline.
+
+The LRC timestamps are assumed to start at the beginning of the song.  If the
+song starts later in the supplied audio, pass that known delay with --offset.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable
+
+
+TIME_TAG_RE = re.compile(
+    r"\[(?P<minutes>\d{1,3}):(?P<seconds>\d{1,2})(?:[\.:](?P<fraction>\d{1,3}))?\]"
+)
+METADATA_RE = re.compile(r"^\[(?P<key>[A-Za-z][A-Za-z0-9_-]*):(?P<value>.*)\]$")
+
+
+@dataclass(frozen=True)
+class LyricLine:
+    start: float
+    text: str
+
+
+@dataclass(frozen=True)
+class LrcDocument:
+    metadata: dict[str, str]
+    lines: list[LyricLine]
+    lrc_offset_seconds: float
+
+
+def _fraction_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    return int(value) / (10 ** len(value))
+
+
+def _decode_lrc(path: Path) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "utf-16"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"无法识别 LRC 文件编码：{path}")
+
+
+def parse_lrc(path: Path) -> LrcDocument:
+    """Parse standard LRC, including repeated timestamps and [offset:ms]."""
+    metadata: dict[str, str] = {}
+    parsed: list[LyricLine] = []
+
+    for raw_line in _decode_lrc(path).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        time_matches = list(TIME_TAG_RE.finditer(line))
+        if not time_matches:
+            metadata_match = METADATA_RE.match(line)
+            if metadata_match:
+                metadata[metadata_match.group("key").lower()] = metadata_match.group(
+                    "value"
+                ).strip()
+            continue
+
+        text = TIME_TAG_RE.sub("", line).strip()
+        if not text:
+            continue
+
+        for match in time_matches:
+            minutes = int(match.group("minutes"))
+            seconds = int(match.group("seconds"))
+            if seconds >= 60:
+                raise ValueError(f"LRC 时间格式错误（秒数应小于 60）：{raw_line}")
+            start = minutes * 60 + seconds + _fraction_seconds(match.group("fraction"))
+            parsed.append(LyricLine(start=start, text=text))
+
+    if not parsed:
+        raise ValueError("LRC 中没有找到带时间戳的非空歌词。")
+
+    # Python's sort is stable, so bilingual rows with the same timestamp keep
+    # the author's original top-to-bottom order.
+    parsed.sort(key=lambda item: item.start)
+
+    # Collapse exact duplicate timestamps. Some exporters emit two lines at the
+    # same time for bilingual lyrics; preserve both by displaying two rows.
+    merged: list[LyricLine] = []
+    for item in parsed:
+        if merged and math.isclose(merged[-1].start, item.start, abs_tol=0.0005):
+            if item.text not in merged[-1].text.split("\\N"):
+                merged[-1] = LyricLine(merged[-1].start, merged[-1].text + "\\N" + item.text)
+        else:
+            merged.append(item)
+
+    offset_ms = 0.0
+    if "offset" in metadata:
+        try:
+            offset_ms = float(metadata["offset"])
+        except ValueError as exc:
+            raise ValueError(f"LRC 的 [offset:] 不是有效毫秒数：{metadata['offset']}") from exc
+
+    return LrcDocument(
+        metadata=metadata,
+        lines=merged,
+        lrc_offset_seconds=offset_ms / 1000.0,
+    )
+
+
+def apply_offset(lines: Iterable[LyricLine], offset_seconds: float) -> list[LyricLine]:
+    shifted: list[LyricLine] = []
+    for line in lines:
+        start = line.start + offset_seconds
+        if start < 0:
+            # Negative events cannot be represented meaningfully in ASS. Clamp
+            # only lines that overlap the start; this is useful for trimmed audio.
+            start = 0.0
+        shifted.append(LyricLine(start=start, text=line.text))
+    return shifted
+
+
+def _ass_timestamp(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    hours, rem = divmod(centiseconds, 360_000)
+    minutes, rem = divmod(rem, 6_000)
+    secs, centis = divmod(rem, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+
+def _ass_escape(text: str) -> str:
+    # Preserve our intentional bilingual line separator, but neutralize user
+    # supplied ASS override blocks.
+    marker = "\0LRC_LINE_BREAK\0"
+    text = text.replace("\\N", marker)
+    text = text.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+    return text.replace(marker, r"\N")
+
+
+def _ass_color(rgb: str, alpha: int = 0) -> str:
+    value = rgb.strip().lstrip("#")
+    if len(value) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in value):
+        raise ValueError(f"颜色必须采用 #RRGGBB 格式：{rgb}")
+    red, green, blue = value[0:2], value[2:4], value[4:6]
+    return f"&H{alpha:02X}{blue}{green}{red}&"
+
+
+def _visible_character_count(text: str) -> int:
+    return len(text.replace("\\N", ""))
+
+
+def _line_end(lines: list[LyricLine], index: int, max_duration: float) -> float:
+    current = lines[index]
+    estimated = min(max_duration, max(2.6, 1.3 + _visible_character_count(current.text) * 0.24))
+    end = current.start + estimated
+    if index + 1 < len(lines):
+        end = min(end, max(current.start + 0.12, lines[index + 1].start - 0.02))
+    return end
+
+
+def build_ass(
+    lines: list[LyricLine],
+    *,
+    width: int,
+    height: int,
+    font_name: str,
+    font_size: int,
+    text_color: str,
+    accent_color: str,
+    max_line_duration: float,
+    show_context: bool,
+) -> str:
+    if not lines:
+        raise ValueError("没有可渲染的歌词。")
+
+    center_x = width // 2
+    center_y = height // 2
+    context_gap = max(78, round(font_size * 1.55))
+    context_size = max(24, round(font_size * 0.47))
+    outline = max(2, round(font_size / 30))
+    shadow = max(1, round(font_size / 60))
+
+    header = f"""[Script Info]
+; Generated by lyrics_mv.py
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Current,{font_name},{font_size},{_ass_color(text_color)},{_ass_color(accent_color)},{_ass_color('#05070D', 18)},{_ass_color('#000000', 130)},-1,0,0,0,100,100,1.2,0,1,{outline},{shadow},5,90,90,40,1
+Style: Context,{font_name},{context_size},{_ass_color(accent_color, 135)},{_ass_color(accent_color, 135)},{_ass_color('#05070D', 100)},{_ass_color('#000000', 180)},0,0,0,0,100,100,0.5,0,1,{max(1, outline - 1)},0,5,120,120,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    events: list[str] = []
+    for index, line in enumerate(lines):
+        end = _line_end(lines, index, max_line_duration)
+        if end <= line.start:
+            continue
+        start_ass = _ass_timestamp(line.start)
+        end_ass = _ass_timestamp(end)
+        lyric = _ass_escape(line.text)
+        current_tags = (
+            rf"{{\an5\pos({center_x},{center_y})\fad(150,220)"
+            rf"\fscx98\fscy98\t(0,260,\fscx103\fscy103)\blur0.35}}"
+        )
+        events.append(
+            f"Dialogue: 2,{start_ass},{end_ass},Current,,0,0,0,,{current_tags}{lyric}"
+        )
+
+        if show_context and index > 0:
+            previous = _ass_escape(lines[index - 1].text)
+            tags = rf"{{\an5\pos({center_x},{center_y - context_gap})\fad(180,180)\blur0.2}}"
+            events.append(
+                f"Dialogue: 1,{start_ass},{end_ass},Context,,0,0,0,,{tags}{previous}"
+            )
+        if show_context and index + 1 < len(lines):
+            upcoming = _ass_escape(lines[index + 1].text)
+            tags = rf"{{\an5\pos({center_x},{center_y + context_gap})\fad(180,180)\blur0.2}}"
+            events.append(
+                f"Dialogue: 1,{start_ass},{end_ass},Context,,0,0,0,,{tags}{upcoming}"
+            )
+
+    return header + "\n".join(events) + "\n"
+
+
+def _ffmpeg_has_filter(ffmpeg: Path, filter_name: str) -> bool:
+    result = subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-filters"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return result.returncode == 0 and re.search(
+        rf"\b{re.escape(filter_name)}\s+(?:V->V|\|->V)", result.stdout
+    ) is not None
+
+
+def _find_ffmpeg(explicit: Path | None) -> Path:
+    if explicit is not None:
+        candidate = explicit.expanduser().resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"指定的 FFmpeg 不存在：{candidate}")
+        return candidate
+
+    env_binary = os.environ.get("LYRICS_MV_FFMPEG")
+    if env_binary:
+        candidate = Path(env_binary).expanduser().resolve()
+        if candidate.is_file():
+            return candidate
+
+    system_binary = shutil.which("ffmpeg")
+    system_candidate = Path(system_binary) if system_binary else None
+    if system_candidate and _ffmpeg_has_filter(system_candidate, "ass"):
+        return system_candidate
+
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        return Path(imageio_ffmpeg.get_ffmpeg_exe())
+    except (ImportError, RuntimeError) as exc:
+        if system_candidate:
+            return system_candidate
+        raise RuntimeError(
+            "没有找到 FFmpeg。请安装系统 FFmpeg，或运行："
+            "python -m pip install -r requirements.txt"
+        ) from exc
+
+
+def _copy_font_files(temp_fonts: Path, font_file: Path | None) -> tuple[str, bool]:
+    temp_fonts.mkdir(parents=True, exist_ok=True)
+    if font_file:
+        source = font_file.expanduser().resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"字体文件不存在：{source}")
+        shutil.copy2(source, temp_fonts / source.name)
+        return "", True
+
+    candidates: list[tuple[str, list[Path]]] = []
+    windows_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    candidates.extend(
+        [
+            ("Noto Serif SC", [windows_fonts / "NotoSerifSC-VF.ttf"]),
+            (
+                "Noto Sans SC",
+                [
+                    windows_fonts / "Noto Sans SC (TrueType).otf",
+                    windows_fonts / "Noto Sans SC Bold (TrueType).otf",
+                ],
+            ),
+            ("Microsoft YaHei", [windows_fonts / "msyh.ttc", windows_fonts / "msyhbd.ttc"]),
+            ("SimHei", [windows_fonts / "simhei.ttf"]),
+            ("SimSun", [windows_fonts / "simsun.ttc"]),
+            (
+                "Noto Sans CJK SC",
+                [
+                    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+                    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+                ],
+            ),
+            ("PingFang SC", [Path("/System/Library/Fonts/PingFang.ttc")]),
+        ]
+    )
+
+    for family, paths in candidates:
+        existing = [path for path in paths if path.is_file()]
+        if existing:
+            for source in existing:
+                shutil.copy2(source, temp_fonts / source.name)
+            return family, True
+    return "Arial", False
+
+
+def _probe_ass_support(ffmpeg: Path) -> None:
+    if not _ffmpeg_has_filter(ffmpeg, "ass"):
+        raise RuntimeError(
+            "当前 FFmpeg 没有 libass/ass 字幕滤镜。请换用完整构建，"
+            "或安装 requirements.txt 中的 imageio-ffmpeg。"
+        )
+
+
+def _validate_dimensions(width: int, height: int, fps: int) -> None:
+    if width < 320 or height < 320 or width % 2 or height % 2:
+        raise ValueError("宽高必须是不小于 320 的偶数。")
+    if not 1 <= fps <= 60:
+        raise ValueError("FPS 必须在 1 到 60 之间。")
+
+
+def _background_source(
+    width: int, height: int, fps: int, colors: list[str], *, gradient_supported: bool
+) -> str:
+    normalized = [color.strip().lstrip("#") for color in colors]
+    for color in normalized:
+        _ass_color(color)
+    if not gradient_supported:
+        return f"color=c=0x{normalized[0]}:s={width}x{height}:r={fps}"
+    color_args = ":".join(f"c{i}=0x{color}" for i, color in enumerate(normalized))
+    return (
+        f"gradients=s={width}x{height}:r={fps}:{color_args}:"
+        f"n={len(normalized)}:type=radial:speed=0.0015"
+    )
+
+
+def _image_background_filter(
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    loop_seconds: float,
+    motion_strength: float,
+    dim: float,
+) -> str:
+    """Build a periodic Ken Burns motion whose first and last states match."""
+    period_frames = fps * loop_seconds
+    zoom_amount = 0.045 * motion_strength
+    pan_amount = 0.34 * motion_strength
+    phase = f"2*PI*on/{period_frames:.6f}"
+    zoom = f"1+{zoom_amount:.6f}*(1-cos({phase}))/2"
+    x = f"iw/2-(iw/zoom/2)+(iw-iw/zoom)*{pan_amount:.6f}*sin({phase})"
+    y = f"ih/2-(ih/zoom/2)+(ih-ih/zoom)*{pan_amount * 0.72:.6f}*sin({phase}+PI/2)"
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        f"zoompan=z='{zoom}':x='{x}':y='{y}':d=1:s={width}x{height}:fps={fps},"
+        "eq=brightness=-0.035:saturation=0.92,"
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@{dim:.3f}:t=fill,"
+        "vignette=PI/5"
+    )
+
+
+def render(args: argparse.Namespace) -> Path:
+    audio = args.audio.expanduser().resolve()
+    lrc = args.lrc.expanduser().resolve()
+    background_image = (
+        args.background_image.expanduser().resolve() if args.background_image else None
+    )
+    output = (
+        args.output.expanduser().resolve()
+        if args.output
+        else audio.with_name(audio.stem + "_lyrics_mv.mp4")
+    )
+
+    if not audio.is_file():
+        raise FileNotFoundError(f"音频不存在：{audio}")
+    if audio.suffix.lower() not in {".mp3", ".wav"}:
+        raise ValueError("音频仅支持 .mp3 或 .wav。")
+    if not lrc.is_file():
+        raise FileNotFoundError(f"LRC 不存在：{lrc}")
+    if background_image and not background_image.is_file():
+        raise FileNotFoundError(f"背景图片不存在：{background_image}")
+    if background_image and background_image.suffix.lower() not in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+    }:
+        raise ValueError("背景图片仅支持 PNG、JPG、JPEG、WebP 或 BMP。")
+    if output.exists() and not args.overwrite:
+        raise FileExistsError(f"输出已存在：{output}。如需覆盖，请加 --overwrite。")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _validate_dimensions(args.width, args.height, args.fps)
+    if args.font_size <= 0:
+        raise ValueError("字体大小必须大于 0。")
+    if args.max_line_duration <= 0:
+        raise ValueError("单句最长显示时间必须大于 0。")
+    if not 0 <= args.crf <= 51:
+        raise ValueError("CRF 必须在 0 到 51 之间。")
+    if args.loop_seconds <= 0:
+        raise ValueError("背景循环时长必须大于 0。")
+    if not 0 <= args.motion_strength <= 1:
+        raise ValueError("背景运动强度必须在 0 到 1 之间。")
+    if not 0 <= args.background_dim <= 0.9:
+        raise ValueError("背景压暗强度必须在 0 到 0.9 之间。")
+
+    document = parse_lrc(lrc)
+    lrc_offset = 0.0 if args.ignore_lrc_offset else document.lrc_offset_seconds
+    effective_offset = args.offset + lrc_offset
+    shifted = apply_offset(document.lines, effective_offset)
+    ffmpeg = _find_ffmpeg(args.ffmpeg)
+    _probe_ass_support(ffmpeg)
+
+    print(f"歌词行数：{len(shifted)}")
+    print(f"音频延迟：{args.offset:.3f} 秒")
+    if lrc_offset:
+        print(f"LRC 内置 offset：{lrc_offset:.3f} 秒")
+    print(f"实际歌词偏移：{effective_offset:.3f} 秒")
+    print(f"FFmpeg：{ffmpeg}")
+
+    temp_root: Path
+    temp_context = None
+    if args.keep_temp:
+        temp_root = output.with_name(output.stem + "_render_files")
+        temp_root.mkdir(parents=True, exist_ok=True)
+    else:
+        temp_context = tempfile.TemporaryDirectory(prefix="lyrics-mv-")
+        temp_root = Path(temp_context.name)
+
+    try:
+        fonts_dir = temp_root / "fonts"
+        detected_font, found_font = _copy_font_files(fonts_dir, args.font_file)
+        font_name = args.font_name or detected_font
+        if args.font_file and not args.font_name:
+            raise ValueError("使用 --font-file 时还必须提供该字体内部的 --font-name。")
+        if not found_font:
+            print("警告：未找到中文字体，将回退到 Arial；中文可能显示为方框。", file=sys.stderr)
+
+        ass_text = build_ass(
+            shifted,
+            width=args.width,
+            height=args.height,
+            font_name=font_name,
+            font_size=args.font_size,
+            text_color=args.text_color,
+            accent_color=args.accent_color,
+            max_line_duration=args.max_line_duration,
+            show_context=not args.no_context,
+        )
+        ass_path = temp_root / "captions.ass"
+        ass_path.write_text(ass_text, encoding="utf-8-sig")
+
+        manifest = {
+            "audio": str(audio),
+            "lrc": str(lrc),
+            "output": str(output),
+            "audio_offset_seconds": args.offset,
+            "lrc_offset_seconds": lrc_offset,
+            "effective_offset_seconds": effective_offset,
+            "resolution": {"width": args.width, "height": args.height, "fps": args.fps},
+            "font": font_name,
+            "background_image": str(background_image) if background_image else None,
+            "background_loop_seconds": args.loop_seconds,
+            "background_motion_strength": args.motion_strength,
+            "background_dim": args.background_dim,
+            "metadata": document.metadata,
+            "lyrics": [asdict(line) for line in shifted],
+        }
+        (temp_root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        command = [
+            str(ffmpeg),
+            "-hide_banner",
+            "-y" if args.overwrite else "-n",
+        ]
+        if background_image:
+            command.extend(
+                ["-loop", "1", "-framerate", str(args.fps), "-i", str(background_image)]
+            )
+            visual_filter = _image_background_filter(
+                width=args.width,
+                height=args.height,
+                fps=args.fps,
+                loop_seconds=args.loop_seconds,
+                motion_strength=args.motion_strength,
+                dim=args.background_dim,
+            )
+        else:
+            background = _background_source(
+                args.width,
+                args.height,
+                args.fps,
+                args.background_colors,
+                gradient_supported=_ffmpeg_has_filter(ffmpeg, "gradients"),
+            )
+            command.extend(["-f", "lavfi", "-i", background])
+            visual_filter = "vignette=PI/5,noise=alls=1.2:allf=t"
+        filter_chain = (
+            visual_filter
+            + ",ass=captions.ass:fontsdir=fonts,format=yuv420p"
+        )
+        command.extend(
+            [
+            "-i",
+            str(audio),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-vf",
+            filter_chain,
+            "-c:v",
+            "libx264",
+            "-preset",
+            args.preset,
+            "-crf",
+            str(args.crf),
+            "-c:a",
+            "aac",
+            "-b:a",
+            args.audio_bitrate,
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(output),
+            ]
+        )
+        if args.dry_run:
+            print("\nDry run；未执行渲染。命令如下：")
+            print(subprocess.list2cmdline(command))
+            print(f"ASS：{ass_path}")
+            return output
+
+        print(f"开始渲染：{output}")
+        completed = subprocess.run(command, cwd=temp_root, check=False)
+        if completed.returncode != 0:
+            raise RuntimeError(f"FFmpeg 渲染失败，退出码：{completed.returncode}")
+        if not output.is_file() or output.stat().st_size == 0:
+            raise RuntimeError("FFmpeg 未产生有效输出文件。")
+        print(f"渲染完成：{output}")
+        return output
+    finally:
+        if temp_context is not None:
+            temp_context.cleanup()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="将 MP3/WAV 和无音频延迟的 LRC 渲染为纯歌词 MV。",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("audio", type=Path, help="输入音频（.mp3 或 .wav）")
+    parser.add_argument("lrc", type=Path, help="与歌曲本体对齐、未包含音频前置延迟的 .lrc")
+    parser.add_argument(
+        "--offset",
+        type=float,
+        required=True,
+        metavar="SECONDS",
+        help="歌曲在输入音频中开始的秒数 x；所有歌词时间都会加 x",
+    )
+    parser.add_argument("-o", "--output", type=Path, help="输出 MP4 路径")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖已有输出")
+    parser.add_argument("--width", type=int, default=1920, help="视频宽度")
+    parser.add_argument("--height", type=int, default=1080, help="视频高度")
+    parser.add_argument("--fps", type=int, default=30, help="视频帧率")
+    parser.add_argument("--font-size", type=int, default=76, help="当前歌词字号")
+    parser.add_argument("--font-name", help="ASS 字体内部名称，例如 Microsoft YaHei")
+    parser.add_argument("--font-file", type=Path, help="自定义 TTF/TTC/OTF 字体文件")
+    parser.add_argument("--text-color", default="#F7F7FA", help="当前歌词颜色")
+    parser.add_argument("--accent-color", default="#8AD8FF", help="字幕次要颜色")
+    parser.add_argument(
+        "--background-image",
+        type=Path,
+        help="AI 生成或人工选择的背景图；提供后将替代自动渐变背景",
+    )
+    parser.add_argument(
+        "--loop-seconds",
+        type=float,
+        default=12.0,
+        help="静态背景图运动循环的周期秒数",
+    )
+    parser.add_argument(
+        "--motion-strength",
+        type=float,
+        default=0.6,
+        help="背景缩放与漂移强度，范围 0 到 1",
+    )
+    parser.add_argument(
+        "--background-dim",
+        type=float,
+        default=0.24,
+        help="背景黑色遮罩强度，范围 0 到 0.9",
+    )
+    parser.add_argument(
+        "--background-colors",
+        nargs=3,
+        default=["#080B16", "#1A1233", "#06212B"],
+        metavar=("COLOR1", "COLOR2", "COLOR3"),
+        help="动态渐变背景的三个颜色",
+    )
+    parser.add_argument(
+        "--max-line-duration",
+        type=float,
+        default=8.0,
+        help="下一句很晚时，单句歌词最多保留的秒数",
+    )
+    parser.add_argument("--no-context", action="store_true", help="不显示淡化的前后歌词")
+    parser.add_argument("--ignore-lrc-offset", action="store_true", help="忽略 LRC 内的 [offset:毫秒]")
+    parser.add_argument("--crf", type=int, default=18, help="H.264 画质；越小越清晰、文件越大")
+    parser.add_argument(
+        "--preset",
+        choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"],
+        default="medium",
+        help="H.264 编码速度预设",
+    )
+    parser.add_argument("--audio-bitrate", default="320k", help="AAC 音频码率")
+    parser.add_argument("--ffmpeg", type=Path, help="显式指定 FFmpeg 可执行文件")
+    parser.add_argument("--keep-temp", action="store_true", help="保留 ASS 和 manifest 调试文件")
+    parser.add_argument("--dry-run", action="store_true", help="只生成临时文件并打印命令")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        render(args)
+        return 0
+    except (FileNotFoundError, FileExistsError, RuntimeError, ValueError) as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
