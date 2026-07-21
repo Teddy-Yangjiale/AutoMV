@@ -21,6 +21,15 @@ python render_project.py automv-project.json -o outputs\final.mp4
 
 字幕与背景的逐层合成方式见 [`docs/COMPOSITING.md`](docs/COMPOSITING.md)，世界级歌词 MV 的案例研究、设计规则和验收门槛见 [`docs/LYRIC_VIDEO_BENCHMARK.md`](docs/LYRIC_VIDEO_BENCHMARK.md)。
 
+让视觉先贴合音乐情感：
+
+```powershell
+python emotion_director.py "D:\Downloads\songs\月光(1).wav" `
+  --offset 0 --output-dir benchmark\emotion
+```
+
+把生成的 `*.director.json` 导入 Studio，即可应用声学情感基线和段落级运动变化。完整原理、八维评分和样片验收方法见 [`docs/EMOTION_MATCHING.md`](docs/EMOTION_MATCHING.md)，当前六首输入的审计见 [`docs/CURRENT_MV_AUDIT.md`](docs/CURRENT_MV_AUDIT.md)。
+
 输入一份 `MP3/WAV` 音频、一份与歌曲本体对齐的 `LRC`，以及歌曲在音频中的已知开始时间 `x`，输出带动态背景和居中歌词动画的 `MP4`。
 
 推荐使用两阶段工作流：

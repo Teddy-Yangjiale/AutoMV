@@ -200,37 +200,52 @@ def _motion_tags(
     alignment_code: int,
     duration_ms: int,
     line_index: int,
+    intensity: float = 0.6,
 ) -> str:
     """Return ASS override tags for one continuous enter-hold-exit motion."""
     if preset not in MOTION_PRESETS:
         raise ValueError(f"未知歌词动效：{preset}")
 
     duration_ms = max(1, duration_ms)
+    intensity = max(0.0, min(1.0, intensity))
+    amplitude = 0.45 + intensity * 0.9
     if preset == "cinematic":
+        enter_y = y + round(22 * amplitude)
+        exit_y = y - round(12 * amplitude)
         return (
-            rf"\an{alignment_code}\move({x},{y + 22},{x},{y - 12},0,{duration_ms})"
+            rf"\an{alignment_code}\move({x},{enter_y},{x},{exit_y},0,{duration_ms})"
             r"\fad(220,320)\fscx97\fscy97\t(0,420,\fscx100\fscy100)\blur0.35"
         )
     if preset == "float":
         direction = 1 if line_index % 2 == 0 else -1
+        enter_x = x + direction * round(30 * amplitude)
+        exit_x = x - direction * round(10 * amplitude)
         return (
-            rf"\an{alignment_code}\move({x + direction * 30},{y},{x - direction * 10},{y},0,{duration_ms})"
+            rf"\an{alignment_code}\move({enter_x},{y},{exit_x},{y},0,{duration_ms})"
             r"\fad(180,260)\blur0.2"
         )
     if preset == "punch":
+        start_scale = round(90 - intensity * 24)
+        overshoot = round(102 + intensity * 10)
         return (
-            rf"\an{alignment_code}\pos({x},{y})\fad(80,180)\fscx72\fscy72"
-            r"\t(0,150,\fscx108\fscy108)\t(150,330,\fscx100\fscy100)"
+            rf"\an{alignment_code}\pos({x},{y})\fad(80,180)\fscx{start_scale}\fscy{start_scale}"
+            rf"\t(0,150,\fscx{overshoot}\fscy{overshoot})\t(150,330,\fscx100\fscy100)"
         )
     if preset == "handwritten":
+        enter_y = y + round(18 * amplitude)
+        exit_x = x + round(6 * amplitude)
+        exit_y = y - round(8 * amplitude)
+        angle = round(-0.5 - intensity * 1.2, 2)
         return (
-            rf"\an{alignment_code}\move({x},{y + 18},{x + 6},{y - 8},0,{duration_ms})"
-            r"\fad(240,300)\frz-1.2\t(0,450,\frz-0.25)\blur0.25"
+            rf"\an{alignment_code}\move({x},{enter_y},{exit_x},{exit_y},0,{duration_ms})"
+            rf"\fad(240,300)\frz{angle}\t(0,450,\frz-0.25)\blur0.25"
         )
     if preset == "neon":
+        blur = round(1.5 + intensity * 4.5, 2)
+        start_scale = round(98 - intensity * 7)
         return (
-            rf"\an{alignment_code}\pos({x},{y})\fad(260,280)\blur4"
-            r"\t(0,420,\blur0.7)\fscx94\fscy94\t(0,420,\fscx100\fscy100)"
+            rf"\an{alignment_code}\pos({x},{y})\fad(260,280)\blur{blur}"
+            rf"\t(0,420,\blur0.7)\fscx{start_scale}\fscy{start_scale}\t(0,420,\fscx100\fscy100)"
         )
     return rf"\an{alignment_code}\pos({x},{y})\fad(320,420)\blur0.2"
 
@@ -251,6 +266,8 @@ def build_ass(
     letter_spacing: float | None = None,
     alignment: str = "center",
     motion_preset: str = "cinematic",
+    section_automation: list[dict[str, object]] | None = None,
+    section_time_offset: float = 0.0,
 ) -> str:
     if not lines:
         raise ValueError("没有可渲染的歌词。")
@@ -263,6 +280,10 @@ def build_ass(
         raise ValueError("字幕对齐方式必须是 left、center 或 right。")
     if motion_preset not in MOTION_PRESETS:
         raise ValueError(f"未知歌词动效：{motion_preset}")
+    for section in section_automation or []:
+        section_motion = str(section.get("motionPreset", motion_preset))
+        if section_motion not in MOTION_PRESETS:
+            raise ValueError(f"段落中包含未知歌词动效：{section_motion}")
 
     style = SUBTITLE_STYLES[subtitle_style]
     alignment_code = {"left": 4, "center": 5, "right": 6}[alignment]
@@ -314,13 +335,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end_ass = _ass_timestamp(end)
         lyric = _ass_escape(line.text)
         duration_ms = max(1, round((end - line.start) * 1000))
+        event_motion = motion_preset
+        event_intensity = 0.6
+        section_time = line.start - section_time_offset
+        for section in section_automation or []:
+            start = float(section.get("start", 0.0))
+            section_end = float(section.get("end", math.inf))
+            if start <= section_time < section_end:
+                event_motion = str(section.get("motionPreset", motion_preset))
+                event_intensity = float(section.get("motionIntensity", 0.6))
+                break
         current_tags = "{" + _motion_tags(
-            motion_preset,
+            event_motion,
             x=center_x,
             y=center_y,
             alignment_code=alignment_code,
             duration_ms=duration_ms,
             line_index=index,
+            intensity=event_intensity,
         ) + style_tags + "}"
         events.append(
             f"Dialogue: 2,{start_ass},{end_ass},Current,,0,0,0,,{current_tags}{lyric}"
@@ -558,6 +590,13 @@ def render(args: argparse.Namespace) -> Path:
     if not 0 <= args.background_dim <= 0.9:
         raise ValueError("背景压暗强度必须在 0 到 0.9 之间。")
 
+    section_automation: list[dict[str, object]] = []
+    if args.section_automation:
+        parsed_automation = json.loads(args.section_automation)
+        if not isinstance(parsed_automation, list) or not all(isinstance(item, dict) for item in parsed_automation):
+            raise ValueError("section-automation 必须是 JSON 对象数组。")
+        section_automation = parsed_automation
+
     document = parse_lrc(lrc)
     lrc_offset = 0.0 if args.ignore_lrc_offset else document.lrc_offset_seconds
     effective_offset = args.offset + lrc_offset
@@ -605,6 +644,8 @@ def render(args: argparse.Namespace) -> Path:
             letter_spacing=args.letter_spacing,
             alignment=args.subtitle_align,
             motion_preset=args.motion_preset,
+            section_automation=section_automation,
+            section_time_offset=effective_offset,
         )
         ass_path = temp_root / "captions.ass"
         ass_path.write_text(ass_text, encoding="utf-8-sig")
@@ -621,6 +662,7 @@ def render(args: argparse.Namespace) -> Path:
             "subtitle_style": args.subtitle_style,
             "subtitle_motion_preset": args.motion_preset,
             "subtitle_display_mode": args.display_mode,
+            "subtitle_section_automation": section_automation,
             "subtitle_y_percent": args.subtitle_y,
             "subtitle_alignment": args.subtitle_align,
             "subtitle_letter_spacing": args.letter_spacing,
@@ -761,6 +803,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["single", "stack"],
         default="single",
         help="single 仅显示当前句，stack 同时显示淡化的前后句",
+    )
+    parser.add_argument(
+        "--section-automation",
+        help="情感导演生成的 JSON 数组；按歌曲段落切换动效与强度",
     )
     parser.add_argument(
         "--subtitle-y",

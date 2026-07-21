@@ -131,6 +131,47 @@ class LrcParsingTests(unittest.TestCase):
                 motion_preset="unknown",
             )
 
+    def test_section_automation_changes_motion_and_intensity(self) -> None:
+        ass = build_ass(
+            [LyricLine(2.0, "安静"), LyricLine(12.0, "高潮")],
+            width=1920,
+            height=1080,
+            font_name="Arial",
+            font_size=76,
+            text_color="#FFFFFF",
+            accent_color="#8AD8FF",
+            max_line_duration=8.0,
+            show_context=False,
+            motion_preset="cinematic",
+            section_automation=[
+                {"start": 0, "end": 10, "motionPreset": "minimal", "motionIntensity": 0.2},
+                {"start": 10, "end": 20, "motionPreset": "punch", "motionIntensity": 1.0},
+            ],
+        )
+        self.assertIn(r"\pos(960,540)\fad(320,420)", ass)
+        self.assertIn(r"\fscx66\fscy66", ass)
+        self.assertIn(r"\fscx112\fscy112", ass)
+
+    def test_section_automation_uses_song_time_after_audio_offset(self) -> None:
+        ass = build_ass(
+            [LyricLine(7.0, "仍属于歌曲第五秒")],
+            width=1920,
+            height=1080,
+            font_name="Arial",
+            font_size=76,
+            text_color="#FFFFFF",
+            accent_color="#8AD8FF",
+            max_line_duration=8.0,
+            show_context=False,
+            section_automation=[
+                {"start": 0, "end": 6, "motionPreset": "minimal"},
+                {"start": 6, "end": 20, "motionPreset": "punch"},
+            ],
+            section_time_offset=2.0,
+        )
+        self.assertIn(r"\pos(960,540)\fad(320,420)", ass)
+        self.assertNotIn(r"\fscx76", ass)
+
     def test_video_background_is_normalized_before_compositing(self) -> None:
         value = _video_background_filter(width=1080, height=1920, fps=30, dim=0.38)
         self.assertIn("scale=1080:1920", value)

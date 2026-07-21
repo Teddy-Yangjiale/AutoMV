@@ -17,6 +17,7 @@ class ProjectBridgeTests(unittest.TestCase):
             "canvas": {"width": 1080, "height": 1920, "fps": 30},
             "background": {"kind": background_kind, "file": "loop.mp4", "dim": 0.38, "motionStrength": 0.4, "loopSeconds": 12},
             "subtitles": {"style": "neon", "motionPreset": "neon", "displayMode": "single", "fontSize": 68, "letterSpacingEm": 0.08, "yPercent": 54, "align": "center", "textColor": "#FFFFFF", "accentColor": "#C8FF3D", "showContext": False},
+            "sectionAutomation": [{"start": 0, "end": 12, "motionPreset": "minimal", "motionIntensity": 0.3}],
             "render": {"crf": 18, "preset": "medium", "audioBitrate": "320k"},
         }
         path = root / "automv-project.json"
@@ -34,6 +35,8 @@ class ProjectBridgeTests(unittest.TestCase):
         self.assertIn("--motion-preset", argv)
         self.assertIn("--display-mode", argv)
         self.assertIn("single", argv)
+        self.assertIn("--section-automation", argv)
+        self.assertTrue(any('"motionPreset":"minimal"' in item for item in argv))
         self.assertIn("--dry-run", argv)
 
     def test_rejects_unknown_background_kind(self) -> None:

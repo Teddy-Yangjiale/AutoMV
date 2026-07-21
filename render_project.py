@@ -51,6 +51,9 @@ def project_to_argv(
     display_mode = subtitles.get("displayMode")
     if display_mode is None:
         display_mode = "stack" if subtitles.get("showContext") is True else "single"
+    section_automation = data.get("sectionAutomation", subtitles.get("sectionAutomation", []))
+    if not isinstance(section_automation, list):
+        raise ValueError("sectionAutomation 必须是数组。")
 
     audio_path = _asset_path(base, audio.get("file"), "audio.file")
     lrc_path = _asset_path(base, lyrics.get("file"), "lyrics.file")
@@ -96,6 +99,8 @@ def project_to_argv(
         "--audio-bitrate",
         str(render.get("audioBitrate", "320k")),
     ]
+    if section_automation:
+        argv.extend(["--section-automation", json.dumps(section_automation, ensure_ascii=False, separators=(",", ":"))])
 
     background_kind = background.get("kind", "gradient")
     if background_kind in {"image", "video"}:

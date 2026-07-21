@@ -23,6 +23,18 @@ class MvPlanTests(unittest.TestCase):
         value = extract_json('```json\n{"project_title": "demo"}\n```')
         self.assertEqual(value["project_title"], "demo")
 
+    def test_prompt_can_reconcile_audio_profile_with_lyrics(self) -> None:
+        prompt = build_user_prompt(
+            [LyricLine(1.0, "雨落下来")],
+            title="测试",
+            artist="",
+            aspect_ratio="16:9",
+            candidate_count=2,
+            audio_profile={"features": {"tempo_bpm": 86.2}, "acousticEmotion": "私密低能"},
+        )
+        self.assertIn('"tempo_bpm": 86.2', prompt)
+        self.assertIn("音乐表层 + 歌词深层", prompt)
+
     def test_validates_minimum_candidate_shape(self) -> None:
         plan = {
             "project_title": "demo",

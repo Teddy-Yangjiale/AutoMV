@@ -86,9 +86,15 @@ def build_user_prompt(
     artist: str,
     aspect_ratio: str,
     candidate_count: int,
+    audio_profile: dict[str, Any] | None = None,
 ) -> str:
     lyrics = "\n".join(f"[{_format_time(line.start)}] {line.text.replace('\\N', ' / ')}" for line in lines)
     schema_text = json.dumps(PLAN_SCHEMA, ensure_ascii=False, indent=2)
+    acoustic_evidence = (
+        json.dumps(audio_profile, ensure_ascii=False, indent=2)
+        if audio_profile
+        else "未提供。不要猜测 BPM、能量曲线或声学情绪。"
+    )
     return f"""请为下面这首歌设计一套纯歌词 MV 视觉方案。
 
 歌曲：{title or '未知标题'}
@@ -104,6 +110,10 @@ def build_user_prompt(
 6. 人物如非必要应避免出现；如果出现，只能是远景、剪影或背影，不能依赖清晰面部和手部。
 7. 输出 {candidate_count} 个可供人工选择的背景候选。image_prompt_en 和 negative_prompt_en 必须使用英文，且可以直接交给图像生成模型。
 8. recommended_motion_strength 必须在 0 到 1 之间；recommended_background_dim 必须在 0 到 0.9 之间。
+9. 声学画像只用于判断能量和段落起伏；歌词负责语义情感。如果二者看似冲突，明确采用“音乐表层 + 歌词深层”的统一表达，不要机械套模板。
+
+音频声学画像：
+{acoustic_evidence}
 
 歌词时间线：
 {lyrics}
@@ -286,6 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aspect-ratio", default="16:9", help="背景图目标画幅")
     parser.add_argument("--candidate-count", type=int, default=4, help="背景 prompt 候选数量")
     parser.add_argument(
+        "--audio-profile",
+        type=Path,
+        help="emotion_director.py 生成的 director.json；用于让大模型同时理解音乐能量和歌词语义",
+    )
+    parser.add_argument(
         "--import-plan",
         type=Path,
         help="导入手动从大模型取得的 JSON，并生成易复制的 background_prompts.md",
@@ -321,12 +336,22 @@ def main(argv: list[str] | None = None) -> int:
         lines = apply_offset(document.lines, args.offset + lrc_offset)
         title = args.title or document.metadata.get("ti", "")
         artist = args.artist or document.metadata.get("ar", "")
+        audio_profile = None
+        if args.audio_profile:
+            profile = json.loads(args.audio_profile.expanduser().resolve().read_text(encoding="utf-8-sig"))
+            audio_profile = {
+                "features": profile.get("features"),
+                "sections": profile.get("sections"),
+                "acousticEmotion": profile.get("recommendation", {}).get("emotion"),
+                "visualBaseline": profile.get("recommendation", {}),
+            }
         user_prompt = build_user_prompt(
             lines,
             title=title,
             artist=artist,
             aspect_ratio=args.aspect_ratio,
             candidate_count=args.candidate_count,
+            audio_profile=audio_profile,
         )
 
         output_dir = args.output_dir.expanduser().resolve()
