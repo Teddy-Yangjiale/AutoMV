@@ -1,33 +1,51 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Ratio = "16:9" | "9:16" | "1:1";
 type BackgroundKind = "gradient" | "image" | "video";
 type SubtitleAlign = "left" | "center" | "right";
+type SubtitleStyleId = "elegant" | "modern" | "poster" | "editorial" | "ink" | "mono" | "outline" | "neon" | "glass";
+type MotionPreset = "cinematic" | "float" | "punch" | "handwritten" | "neon" | "minimal";
+type DisplayMode = "single" | "stack";
+type TimedLyric = { start: number; text: string };
 
-const templates = [
-  { id: "film", name: "情绪电影", subtitle: "克制 / 叙事", colors: ["#17243f", "#d6a97d"] },
-  { id: "impact", name: "蓝色冲击", subtitle: "节拍 / 闪切", colors: ["#0a39ff", "#5ce1ff"] },
-  { id: "editorial", name: "杂志留白", subtitle: "优雅 / 人声", colors: ["#d8d1c5", "#6d5549"] },
-  { id: "neon", name: "霓虹余响", subtitle: "夜景 / 律动", colors: ["#120b25", "#e144ff"] },
-  { id: "paper", name: "纸上诗歌", subtitle: "民谣 / 轻柔", colors: ["#bfae96", "#ede3d3"] },
-  { id: "mono", name: "黑白宣言", subtitle: "极简 / 强烈", colors: ["#080808", "#f4f4ef"] },
-] as const;
-
-const sampleLyrics = ["我把黄昏写进风里", "等一场没有名字的雨", "让此刻慢一点经过"];
-
-const subtitleStyles = [
+const subtitleStyles: ReadonlyArray<{ id: SubtitleStyleId; name: string; note: string; font: string; weight: number; italic: boolean; outline: number; shadow: number; glow: number; capsule: boolean }> = [
   { id: "elegant", name: "优雅宋体", note: "电影感叙事", font: '"Noto Serif SC", "Songti SC", STSong, SimSun, serif', weight: 500, italic: false, outline: 0, shadow: 26, glow: 0, capsule: false },
   { id: "modern", name: "现代黑体", note: "干净克制", font: '"Noto Sans SC", "Microsoft YaHei", sans-serif', weight: 650, italic: false, outline: 0, shadow: 18, glow: 0, capsule: false },
   { id: "poster", name: "海报粗体", note: "强节拍冲击", font: 'Impact, "Arial Black", "Microsoft YaHei", sans-serif', weight: 900, italic: false, outline: 2, shadow: 8, glow: 0, capsule: false },
   { id: "editorial", name: "杂志衬线", note: "留白与呼吸", font: 'Didot, Bodoni MT, Georgia, "Noto Serif SC", serif', weight: 500, italic: true, outline: 0, shadow: 14, glow: 0, capsule: false },
-  { id: "ink", name: "水墨楷体", note: "东方诗意", font: 'KaiTi, STKaiti, "Noto Serif SC", serif', weight: 500, italic: false, outline: 0, shadow: 22, glow: 0, capsule: false },
+  { id: "ink", name: "水墨楷体", note: "手写与诗意", font: 'KaiTi, STKaiti, "Noto Serif SC", serif', weight: 500, italic: false, outline: 0, shadow: 22, glow: 0, capsule: false },
   { id: "mono", name: "等宽字幕", note: "冷感电子", font: '"JetBrains Mono", Consolas, "Microsoft YaHei", monospace', weight: 600, italic: false, outline: 0, shadow: 12, glow: 0, capsule: false },
   { id: "outline", name: "空心描边", note: "高对比舞台", font: '"Arial Black", "Microsoft YaHei", sans-serif', weight: 900, italic: false, outline: 3, shadow: 0, glow: 0, capsule: false },
   { id: "neon", name: "霓虹辉光", note: "夜景氛围", font: '"Noto Sans SC", "Microsoft YaHei", sans-serif', weight: 750, italic: false, outline: 0, shadow: 8, glow: 24, capsule: false },
   { id: "glass", name: "玻璃胶囊", note: "清晰信息层", font: '"Noto Sans SC", "Microsoft YaHei", sans-serif', weight: 650, italic: false, outline: 0, shadow: 18, glow: 0, capsule: true },
-] as const;
+];
+
+const directions: ReadonlyArray<{ id: string; name: string; subtitle: string; colors: [string, string, string]; style: SubtitleStyleId; motion: MotionPreset; text: string; accent: string; dim: number; motionAmount: number; fontSize: number; tracking: number }> = [
+  { id: "film", name: "电影呼吸", subtitle: "抒情 / 叙事", colors: ["#101827", "#81684f", "#d8b68f"], style: "elegant", motion: "cinematic", text: "#fff9ef", accent: "#d9ad7c", dim: 42, motionAmount: 12, fontSize: 58, tracking: 8 },
+  { id: "chalk", name: "粉笔故事", subtitle: "童真 / 手绘", colors: ["#071b20", "#d09b68", "#8fb6c3"], style: "ink", motion: "handwritten", text: "#f4dfb7", accent: "#e49a70", dim: 24, motionAmount: 9, fontSize: 60, tracking: 6 },
+  { id: "collage", name: "流行拼贴", subtitle: "明快 / 跳跃", colors: ["#103e8c", "#ef493f", "#77c8ea"], style: "poster", motion: "punch", text: "#fffaf0", accent: "#ff5548", dim: 18, motionAmount: 20, fontSize: 66, tracking: 1 },
+  { id: "diary", name: "公路日记", subtitle: "旅行 / 回忆", colors: ["#0b3640", "#a57a57", "#e9dfca"], style: "ink", motion: "float", text: "#fffdf7", accent: "#e5c39d", dim: 34, motionAmount: 14, fontSize: 62, tracking: 5 },
+  { id: "neon", name: "霓虹余响", subtitle: "夜景 / 律动", colors: ["#110823", "#7e2dbd", "#e144ff"], style: "neon", motion: "neon", text: "#fff7ff", accent: "#e85cff", dim: 38, motionAmount: 18, fontSize: 60, tracking: 4 },
+  { id: "mono", name: "黑白留白", subtitle: "极简 / 克制", colors: ["#080808", "#3f4145", "#f0eee8"], style: "modern", motion: "minimal", text: "#f7f5ef", accent: "#d2d0c9", dim: 48, motionAmount: 5, fontSize: 54, tracking: 10 },
+];
+
+const motionPresets: ReadonlyArray<{ id: MotionPreset; name: string; note: string }> = [
+  { id: "cinematic", name: "电影上浮", note: "柔和交接" },
+  { id: "float", name: "水平漂移", note: "连续流动" },
+  { id: "punch", name: "节拍撞入", note: "弹性缩放" },
+  { id: "handwritten", name: "手写落笔", note: "轻微旋转" },
+  { id: "neon", name: "霓虹聚焦", note: "模糊成像" },
+  { id: "minimal", name: "极简淡化", note: "几乎静止" },
+];
+
+const sampleLyrics: TimedLyric[] = [
+  { start: 0, text: "我把黄昏写进风里" },
+  { start: 2.8, text: "等一场没有名字的雨" },
+  { start: 5.9, text: "让此刻慢一点经过" },
+  { start: 8.8, text: "下一句从上一句的方向继续" },
+];
 
 function Icon({ name }: { name: "play" | "upload" | "spark" | "layers" | "download" }) {
   const paths = {
@@ -40,54 +58,129 @@ function Icon({ name }: { name: "play" | "upload" | "spark" | "layers" | "downlo
   return <svg aria-hidden="true" viewBox="0 0 24 24" className="icon">{paths[name]}</svg>;
 }
 
+function parseLrc(source: string): TimedLyric[] {
+  const parsed: TimedLyric[] = [];
+  for (const rawLine of source.split(/\r?\n/)) {
+    const matches = [...rawLine.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
+    const text = rawLine.replace(/\[[^\]]+\]/g, "").trim();
+    if (!text || !matches.length) continue;
+    for (const match of matches) {
+      const fraction = match[3] ? Number(match[3]) / 10 ** match[3].length : 0;
+      parsed.push({ start: Number(match[1]) * 60 + Number(match[2]) + fraction, text });
+    }
+  }
+  return parsed.sort((a, b) => a.start - b.start);
+}
+
+function formatTime(seconds: number) {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(Math.floor(safe % 60)).padStart(2, "0")}`;
+}
+
 export default function Home() {
-  const [template, setTemplate] = useState<(typeof templates)[number]["id"]>("film");
+  const [direction, setDirection] = useState("film");
   const [ratio, setRatio] = useState<Ratio>("16:9");
   const [background, setBackground] = useState<{ kind: BackgroundKind; url?: string }>({ kind: "gradient" });
-  const [lyrics, setLyrics] = useState(sampleLyrics);
-  const [activeLine, setActiveLine] = useState(1);
+  const [lyrics, setLyrics] = useState<TimedLyric[]>(sampleLyrics);
+  const [activeLine, setActiveLine] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [dim, setDim] = useState(38);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(11.8);
+  const [dim, setDim] = useState(42);
   const [motion, setMotion] = useState(12);
   const [audioName, setAudioName] = useState("等待载入歌曲");
+  const [audioUrl, setAudioUrl] = useState<string>();
   const [lrcName, setLrcName] = useState("lyrics.lrc");
   const [backgroundName, setBackgroundName] = useState("background.png");
   const [offsetSeconds, setOffsetSeconds] = useState(0);
-  const [subtitleStyle, setSubtitleStyle] = useState<(typeof subtitleStyles)[number]["id"]>("elegant");
-  const [fontSize, setFontSize] = useState(56);
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyleId>("elegant");
+  const [motionPreset, setMotionPreset] = useState<MotionPreset>("cinematic");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("single");
+  const [fontSize, setFontSize] = useState(58);
   const [letterSpacing, setLetterSpacing] = useState(8);
   const [subtitleY, setSubtitleY] = useState(52);
   const [subtitleAlign, setSubtitleAlign] = useState<SubtitleAlign>("center");
-  const [textColor, setTextColor] = useState("#fffaf1");
-  const [accentColor, setAccentColor] = useState("#c8ff3d");
-  const ownedUrl = useRef<string | null>(null);
+  const [textColor, setTextColor] = useState("#fff9ef");
+  const [accentColor, setAccentColor] = useState("#d9ad7c");
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioObjectUrl = useRef<string>();
+  const backgroundObjectUrl = useRef<string>();
 
-  const chosen = templates.find((item) => item.id === template) ?? templates[0];
+  const chosen = directions.find((item) => item.id === direction) ?? directions[0];
   const chosenSubtitle = subtitleStyles.find((item) => item.id === subtitleStyle) ?? subtitleStyles[0];
   const ratioClass = ratio.replace(":", "-");
-  const progress = activeLine === 0 ? 18 : activeLine === 1 ? 44 : 73;
+  const progress = duration > 0 ? Math.min(100, currentTime / duration * 100) : 0;
+  const previousLine = activeLine > 0 ? lyrics[activeLine - 1] : undefined;
+  const currentLine = activeLine >= 0 ? lyrics[activeLine] : undefined;
+  const nextLine = activeLine >= 0 && activeLine + 1 < lyrics.length ? lyrics[activeLine + 1] : undefined;
+  const lineDuration = currentLine
+    ? Math.min(6, Math.max(1.4, (nextLine?.start ?? currentLine.start + 3.2) - currentLine.start))
+    : 2;
+
+  const updateActiveLine = useCallback((audioTime: number, lyricOffset = offsetSeconds) => {
+    const lyricTime = audioTime - lyricOffset;
+    let index = -1;
+    for (let i = 0; i < lyrics.length; i += 1) {
+      if (lyrics[i].start <= lyricTime) index = i;
+      else break;
+    }
+    setActiveLine(index);
+  }, [lyrics, offsetSeconds]);
 
   useEffect(() => () => {
-    if (ownedUrl.current) URL.revokeObjectURL(ownedUrl.current);
+    if (audioObjectUrl.current) URL.revokeObjectURL(audioObjectUrl.current);
+    if (backgroundObjectUrl.current) URL.revokeObjectURL(backgroundObjectUrl.current);
   }, []);
 
   useEffect(() => {
-    if (!playing) return;
-    const timer = window.setInterval(() => setActiveLine((line) => (line + 1) % lyrics.length), 2200);
+    if (!playing || audioUrl) return;
+    const timer = window.setInterval(() => {
+      setCurrentTime((value) => {
+        const next = value + 0.05 >= duration ? 0 : value + 0.05;
+        updateActiveLine(next);
+        return next;
+      });
+    }, 50);
     return () => window.clearInterval(timer);
-  }, [playing, lyrics.length]);
+  }, [playing, audioUrl, duration, updateActiveLine]);
 
   const backgroundStyle = useMemo(() => {
     if (background.kind === "image" && background.url) return { backgroundImage: `url(${background.url})` };
-    return { backgroundImage: `radial-gradient(circle at 24% 20%, ${chosen.colors[1]}55, transparent 34%), linear-gradient(145deg, ${chosen.colors[0]}, #07080d 72%)` };
+    return { backgroundImage: `radial-gradient(circle at 24% 18%, ${chosen.colors[2]}44, transparent 30%), radial-gradient(circle at 76% 80%, ${chosen.colors[1]}55, transparent 36%), linear-gradient(145deg, ${chosen.colors[0]}, #06070a 76%)` };
   }, [background, chosen]);
+
+  function applyDirection(id: string) {
+    const preset = directions.find((item) => item.id === id);
+    if (!preset) return;
+    setDirection(id);
+    setSubtitleStyle(preset.style);
+    setMotionPreset(preset.motion);
+    setTextColor(preset.text);
+    setAccentColor(preset.accent);
+    setDim(preset.dim);
+    setMotion(preset.motionAmount);
+    setFontSize(preset.fontSize);
+    setLetterSpacing(preset.tracking);
+  }
+
+  function chooseAudio(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (audioObjectUrl.current) URL.revokeObjectURL(audioObjectUrl.current);
+    const url = URL.createObjectURL(file);
+    audioObjectUrl.current = url;
+    setAudioUrl(url);
+    setAudioName(file.name);
+    setPlaying(false);
+    setCurrentTime(0);
+  }
 
   function chooseBackground(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (ownedUrl.current) URL.revokeObjectURL(ownedUrl.current);
+    if (backgroundObjectUrl.current) URL.revokeObjectURL(backgroundObjectUrl.current);
     const url = URL.createObjectURL(file);
-    ownedUrl.current = url;
+    backgroundObjectUrl.current = url;
     setBackgroundName(file.name);
     setBackground({ kind: file.type.startsWith("video/") ? "video" : "image", url });
   }
@@ -98,17 +191,37 @@ export default function Home() {
     setLrcName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
-      const lines = String(reader.result ?? "")
-        .split(/\r?\n/)
-        .map((line) => line.replace(/^\[[^\]]+\]/, "").trim())
-        .filter(Boolean)
-        .slice(0, 12);
-      if (lines.length) {
-        setLyrics(lines);
-        setActiveLine(0);
+      const parsed = parseLrc(String(reader.result ?? ""));
+      if (parsed.length) {
+        setLyrics(parsed);
+        setActiveLine(offsetSeconds > 0 ? -1 : 0);
+        setCurrentTime(0);
+        if (!audioUrl) setDuration(Math.max(8, parsed.at(-1)!.start + 3));
       }
     };
     reader.readAsText(file);
+  }
+
+  async function togglePlayback() {
+    if (audioRef.current && audioUrl) {
+      if (audioRef.current.paused) {
+        await audioRef.current.play();
+        setPlaying(true);
+      } else {
+        audioRef.current.pause();
+        setPlaying(false);
+      }
+      return;
+    }
+    setPlaying((value) => !value);
+  }
+
+  function seek(event: MouseEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const target = Math.max(0, Math.min(duration, (event.clientX - rect.left) / rect.width * duration));
+    if (audioRef.current && audioUrl) audioRef.current.currentTime = target;
+    setCurrentTime(target);
+    updateActiveLine(target);
   }
 
   function downloadProject() {
@@ -118,8 +231,9 @@ export default function Home() {
       audio: { file: audioName === "等待载入歌曲" ? "song.wav" : audioName, offsetSeconds },
       lyrics: { file: lrcName },
       canvas: { ratio, width: dimensions[0], height: dimensions[1], fps: 30 },
+      visualDirection: direction,
       background: { kind: background.kind, file: background.kind === "gradient" ? null : backgroundName, dim: dim / 100, motionStrength: motion / 30, loopSeconds: 12 },
-      subtitles: { style: subtitleStyle, fontFamily: chosenSubtitle.font, fontSize, letterSpacingEm: letterSpacing / 100, yPercent: subtitleY, align: subtitleAlign, textColor, accentColor, showContext: true },
+      subtitles: { style: subtitleStyle, motionPreset, displayMode, fontFamily: chosenSubtitle.font, fontSize, letterSpacingEm: letterSpacing / 100, yPercent: subtitleY, align: subtitleAlign, textColor, accentColor, showContext: displayMode === "stack" },
       render: { crf: 18, preset: "medium", audioBitrate: "320k" },
     };
     const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }));
@@ -130,21 +244,42 @@ export default function Home() {
     URL.revokeObjectURL(blobUrl);
   }
 
+  const canvasVariables = {
+    "--dim": dim / 100,
+    "--motion": `${Math.max(1, motion / 10)}s`,
+    "--line-duration": `${lineDuration}s`,
+    "--subtitle-size": `${fontSize}px`,
+    "--subtitle-tracking": `${letterSpacing / 100}em`,
+    "--subtitle-y": `${subtitleY}%`,
+    "--subtitle-color": textColor,
+    "--subtitle-accent": accentColor,
+    "--subtitle-outline": `${chosenSubtitle.outline}px`,
+    "--subtitle-shadow": `${chosenSubtitle.shadow}px`,
+    "--subtitle-glow": `${chosenSubtitle.glow}px`,
+    "--subtitle-font": chosenSubtitle.font,
+    "--subtitle-weight": chosenSubtitle.weight,
+    "--subtitle-style": chosenSubtitle.italic ? "italic" : "normal",
+    "--subtitle-align": subtitleAlign,
+    "--subtitle-flex": subtitleAlign === "left" ? "flex-start" : subtitleAlign === "right" ? "flex-end" : "center",
+  } as React.CSSProperties;
+
   return (
     <main className="studio-shell">
+      <audio ref={audioRef} src={audioUrl} onTimeUpdate={(event) => { const time = event.currentTarget.currentTime; setCurrentTime(time); updateActiveLine(time); }} onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
       <header className="topbar">
         <a className="brand" href="#" aria-label="AutoMV Studio home"><span className="brand-mark">A</span><span>AutoMV <b>Studio</b></span></a>
-        <div className="project-title"><span className="status-dot" />未命名歌词 MV <span className="saved">已自动保存</span></div>
-        <div className="top-actions"><button className="ghost-button">帮助</button><button className="export-button" onClick={downloadProject}><Icon name="download" /> 导出配置</button></div>
+        <div className="project-title"><span className="status-dot" />逐句动效设计 <span className="saved">LRC 时间驱动</span></div>
+        <div className="top-actions"><button className="ghost-button">设计基准</button><button className="export-button" onClick={downloadProject}><Icon name="download" /> 导出配置</button></div>
       </header>
 
       <section className="workspace">
         <aside className="panel left-panel">
-          <div className="panel-heading"><div><span className="eyebrow">STYLE LAB</span><h2>视觉模板</h2></div><button className="icon-button"><Icon name="spark" /></button></div>
+          <div className="panel-heading"><div><span className="eyebrow">VISUAL DIRECTION</span><h2>成片视觉方向</h2></div><button className="icon-button"><Icon name="spark" /></button></div>
+          <p className="panel-intro">每个方向会一起改变字体、配色、遮罩和句子运动。</p>
           <div className="template-grid">
-            {templates.map((item) => (
-              <button key={item.id} className={`template-card ${template === item.id ? "selected" : ""}`} onClick={() => setTemplate(item.id)}>
-                <span className="template-swatch" style={{ background: `linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]})` }}><i>字</i></span>
+            {directions.map((item) => (
+              <button key={item.id} className={`template-card ${direction === item.id ? "selected" : ""}`} onClick={() => applyDirection(item.id)}>
+                <span className="template-swatch" style={{ background: `linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]} 58%, ${item.colors[2]})` }}><i style={{ color: item.text }}>字</i><em style={{ background: item.accent }} /></span>
                 <span><b>{item.name}</b><small>{item.subtitle}</small></span>
               </button>
             ))}
@@ -152,10 +287,10 @@ export default function Home() {
 
           <div className="divider" />
           <div className="section-title"><span><Icon name="upload" /> 素材</span><small>本地处理，不上传</small></div>
-          <label className="upload-row"><span className="file-kind audio">♪</span><span><b>歌曲音频</b><small>{audioName}</small></span><input type="file" accept="audio/mp3,audio/wav,audio/*" onChange={(event) => setAudioName(event.target.files?.[0]?.name ?? "等待载入歌曲")} /><em>选择</em></label>
-          <label className="upload-row"><span className="file-kind">L</span><span><b>LRC 歌词</b><small>{lyrics === sampleLyrics ? "使用示例歌词" : `${lyrics.length} 行已载入`}</small></span><input type="file" accept=".lrc,text/plain" onChange={chooseLyrics} /><em>选择</em></label>
+          <label className="upload-row"><span className="file-kind audio">♪</span><span><b>歌曲音频</b><small>{audioName}</small></span><input type="file" accept="audio/mp3,audio/wav,audio/*" onChange={chooseAudio} /><em>选择</em></label>
+          <label className="upload-row"><span className="file-kind">L</span><span><b>LRC 歌词</b><small>{lyrics === sampleLyrics ? "使用带时间示例" : `${lyrics.length} 句已载入`}</small></span><input type="file" accept=".lrc,text/plain" onChange={chooseLyrics} /><em>选择</em></label>
           <label className="upload-row"><span className="file-kind image">▧</span><span><b>背景素材</b><small>图片或循环视频</small></span><input type="file" accept="image/*,video/*" onChange={chooseBackground} /><em>选择</em></label>
-          <label className="number-field"><span><b>歌曲开始时间 x</b><small>LRC 时间统一加上 x</small></span><div><input type="number" min="0" step="0.01" value={offsetSeconds} onChange={(event) => setOffsetSeconds(Number(event.target.value))} /><em>秒</em></div></label>
+          <label className="number-field"><span><b>歌曲开始时间 x</b><small>预览与成片同时应用</small></span><div><input type="number" min="0" step="0.01" value={offsetSeconds} onChange={(event) => { const value = Number(event.target.value); setOffsetSeconds(value); updateActiveLine(currentTime, value); }} /><em>秒</em></div></label>
 
           <div className="divider" />
           <div className="section-title"><span><Icon name="layers" /> 画布</span></div>
@@ -163,37 +298,43 @@ export default function Home() {
         </aside>
 
         <section className="stage-area">
-          <div className="stage-toolbar"><span className="live-pill"><i /> 实时预览</span><span>{ratio} · 1080P</span><button>适应画布</button></div>
+          <div className="stage-toolbar"><span className="live-pill"><i /> LRC 同步预览</span><span>{ratio} · 1080P</span><span className="motion-readout">{motionPresets.find((item) => item.id === motionPreset)?.name}</span></div>
           <div className={`canvas-wrap ratio-${ratioClass}`}>
-            <div className={`mv-canvas preset-${template} subtitle-${subtitleStyle}`} style={{ "--dim": dim / 100, "--motion": `${motion / 10}s`, "--subtitle-size": `${fontSize}px`, "--subtitle-tracking": `${letterSpacing / 100}em`, "--subtitle-y": `${subtitleY}%`, "--subtitle-color": textColor, "--subtitle-accent": accentColor, "--subtitle-outline": `${chosenSubtitle.outline}px`, "--subtitle-shadow": `${chosenSubtitle.shadow}px`, "--subtitle-glow": `${chosenSubtitle.glow}px`, "--subtitle-font": chosenSubtitle.font, "--subtitle-weight": chosenSubtitle.weight, "--subtitle-style": chosenSubtitle.italic ? "italic" : "normal", "--subtitle-align": subtitleAlign, "--subtitle-flex": subtitleAlign === "left" ? "flex-start" : subtitleAlign === "right" ? "flex-end" : "center" } as React.CSSProperties}>
+            <div className={`mv-canvas direction-${direction} subtitle-${subtitleStyle} motion-${motionPreset} mode-${displayMode}`} style={canvasVariables}>
               {background.kind === "video" && background.url ? <video className="background-media" src={background.url} autoPlay muted loop playsInline /> : <div className="background-media generated" style={backgroundStyle} />}
               <div className="background-grade" />
               <div className="film-grain" />
               <div className={`lyric-stage ${chosenSubtitle.capsule ? "with-capsule" : ""}`}>
-                <span className="lyric-kicker">AUTOMV · {chosen.name}</span>
-                {lyrics.slice(Math.max(0, activeLine - 1), activeLine + 2).map((line, index) => {
-                  const sourceIndex = Math.max(0, activeLine - 1) + index;
-                  return <p key={`${sourceIndex}-${line}`} className={sourceIndex === activeLine ? "current" : "context"}>{line}</p>;
-                })}
+                <span className="lyric-kicker">{chosen.name} · {activeLine >= 0 ? String(activeLine + 1).padStart(2, "0") : "INTRO"}</span>
+                {displayMode === "stack" && previousLine && <p key={`previous-${activeLine}`} className="context previous-context"><span>{previousLine.text}</span></p>}
+                {currentLine
+                  ? <p key={`current-${activeLine}-${currentLine.text}`} className="current"><span>{currentLine.text}</span></p>
+                  : <p className="waiting-line"><span>等待歌曲开始</span></p>}
+                {displayMode === "single" && previousLine && <p key={`leaving-${activeLine}`} className="leaving"><span>{previousLine.text}</span></p>}
+                {displayMode === "stack" && nextLine && <p key={`next-${activeLine}`} className="context next-context"><span>{nextLine.text}</span></p>}
                 <span className="lyric-rule" />
               </div>
-              <span className="timecode">00:{String(activeLine * 7 + 12).padStart(2, "0")}</span>
+              <span className="timecode">{formatTime(currentTime)} · {activeLine >= 0 ? String(activeLine + 1).padStart(2, "0") : "--"}/{String(lyrics.length).padStart(2, "0")}</span>
             </div>
           </div>
           <div className="transport">
-            <button className="play-button" onClick={() => setPlaying((value) => !value)}><Icon name="play" /></button>
-            <span>00:{String(activeLine * 7 + 12).padStart(2, "0")}</span><div className="timeline"><i style={{ width: `${progress}%` }} /><b style={{ left: `${progress}%` }} /></div><span>03:42</span><button className="sound-button">⌁</button>
+            <button className={`play-button ${playing ? "playing" : ""}`} onClick={togglePlayback} aria-label={playing ? "暂停" : "播放"}>{playing ? <span>Ⅱ</span> : <Icon name="play" />}</button>
+            <span>{formatTime(currentTime)}</span><div className="timeline" onClick={seek} role="slider" aria-label="播放进度" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(currentTime)}><i style={{ width: `${progress}%` }} /><b style={{ left: `${progress}%` }} />{lyrics.map((line) => <em key={line.start} style={{ left: `${Math.min(100, (line.start + offsetSeconds) / duration * 100)}%` }} />)}</div><span>{formatTime(duration)}</span><button className="sound-button">⌁</button>
           </div>
         </section>
 
         <aside className="panel right-panel">
-          <div className="panel-heading"><div><span className="eyebrow">INSPECTOR</span><h2>画面调节</h2></div><span className="auto-badge">AUTO</span></div>
-          <Control label="背景压暗" value={dim} min={0} max={80} suffix="%" onChange={setDim} />
-          <Control label="缓慢运动" value={motion} min={0} max={30} suffix="" onChange={setMotion} />
-          <div className="switch-row"><span><b>渐变遮罩</b><small>保证歌词可读性</small></span><button className="switch on"><i /></button></div>
-          <div className="switch-row"><span><b>电影颗粒</b><small>轻微纹理层</small></span><button className="switch on"><i /></button></div>
+          <div className="panel-heading"><div><span className="eyebrow">KINETIC TYPE</span><h2>逐句运动</h2></div><span className="auto-badge">SYNC</span></div>
+          <div className="section-title"><span>显示逻辑</span><small>正式成片默认单句</small></div>
+          <div className="segmented mode-control">{(["single", "stack"] as DisplayMode[]).map((mode) => <button key={mode} onClick={() => setDisplayMode(mode)} className={displayMode === mode ? "active" : ""}>{mode === "single" ? "逐句交接" : "前后文堆叠"}</button>)}</div>
+          <div className="motion-grid">{motionPresets.map((item) => <button key={item.id} onClick={() => setMotionPreset(item.id)} className={motionPreset === item.id ? "selected" : ""}><b>{item.name}</b><small>{item.note}</small></button>)}</div>
+          <div className="continuity-note"><i /><span><b>连续交接已启用</b><small>上一句沿当前方向离场，新句承接同一运动轴进入。</small></span></div>
           <div className="divider" />
-          <div className="section-title"><span>字幕设计</span><small>9 种样式</small></div>
+          <div className="section-title"><span>背景与可读性</span></div>
+          <Control label="背景压暗" value={dim} min={0} max={80} suffix="%" onChange={setDim} />
+          <Control label="背景运动" value={motion} min={0} max={30} suffix="" onChange={setMotion} />
+          <div className="divider" />
+          <div className="section-title"><span>字幕字体</span><small>9 种风格</small></div>
           <div className="subtitle-style-grid">
             {subtitleStyles.map((style) => <button key={style.id} title={style.note} className={subtitleStyle === style.id ? "selected" : ""} onClick={() => setSubtitleStyle(style.id)} style={{ fontFamily: style.font, fontStyle: style.italic ? "italic" : "normal", fontWeight: style.weight }}><b>Aa 字</b><small>{style.name}</small></button>)}
           </div>
@@ -203,9 +344,7 @@ export default function Home() {
           <Control label="纵向位置" value={subtitleY} min={24} max={78} suffix="%" onChange={setSubtitleY} />
           <div className="compact-row"><span>对齐</span><div className="align-buttons">{(["left", "center", "right"] as SubtitleAlign[]).map((align) => <button key={align} className={subtitleAlign === align ? "active" : ""} style={{ textAlign: align }} onClick={() => setSubtitleAlign(align)} aria-label={`字幕${align === "left" ? "左" : align === "right" ? "右" : "居中"}对齐`}>≡</button>)}</div></div>
           <div className="color-row"><label><span>文字</span><input type="color" value={textColor} onChange={(event) => setTextColor(event.target.value)} /></label><label><span>强调色</span><input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)} /></label></div>
-          <div className="divider" />
-          <div className="layer-stack"><span className="section-title">合成层级</span>{["04  字幕与动效", "03  可读性遮罩", "02  色彩与颗粒", "01  背景图片 / 视频"].map((line) => <div key={line}><i />{line}</div>)}</div>
-          <div className="render-note"><Icon name="spark" /><p><b>网页负责所见即所得预览</b><span>最终视频交给 FFmpeg + ASS 精确渲染，字体、描边和音频时间不会漂移。</span></p></div>
+          <div className="render-note"><Icon name="spark" /><p><b>同一份运动配置用于最终渲染</b><span>网页负责设计预览，FFmpeg + ASS 按 LRC 逐句生成正式视频。</span></p></div>
         </aside>
       </section>
     </main>
