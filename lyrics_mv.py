@@ -52,6 +52,8 @@ SUBTITLE_STYLES: dict[str, dict[str, object]] = {
     "glass": {"bold": True, "italic": False, "outline": 8.0, "shadow": 0.0, "spacing": 0.8, "capsule": True},
 }
 
+MOTION_PRESETS = ("cinematic", "float", "punch", "handwritten", "neon", "minimal")
+
 
 def _fraction_seconds(value: str | None) -> float:
     if not value:
@@ -172,13 +174,65 @@ def _visible_character_count(text: str) -> int:
     return len(text.replace("\\N", ""))
 
 
-def _line_end(lines: list[LyricLine], index: int, max_duration: float) -> float:
+def _line_end(
+    lines: list[LyricLine],
+    index: int,
+    max_duration: float,
+    handoff_overlap: float = -0.02,
+) -> float:
     current = lines[index]
     estimated = min(max_duration, max(2.6, 1.3 + _visible_character_count(current.text) * 0.24))
     end = current.start + estimated
     if index + 1 < len(lines):
-        end = min(end, max(current.start + 0.12, lines[index + 1].start - 0.02))
+        next_handoff = max(current.start + 0.12, lines[index + 1].start + handoff_overlap)
+        if handoff_overlap >= 0:
+            end = min(current.start + max_duration, next_handoff)
+        else:
+            end = min(end, next_handoff)
     return end
+
+
+def _motion_tags(
+    preset: str,
+    *,
+    x: int,
+    y: int,
+    alignment_code: int,
+    duration_ms: int,
+    line_index: int,
+) -> str:
+    """Return ASS override tags for one continuous enter-hold-exit motion."""
+    if preset not in MOTION_PRESETS:
+        raise ValueError(f"未知歌词动效：{preset}")
+
+    duration_ms = max(1, duration_ms)
+    if preset == "cinematic":
+        return (
+            rf"\an{alignment_code}\move({x},{y + 22},{x},{y - 12},0,{duration_ms})"
+            r"\fad(220,320)\fscx97\fscy97\t(0,420,\fscx100\fscy100)\blur0.35"
+        )
+    if preset == "float":
+        direction = 1 if line_index % 2 == 0 else -1
+        return (
+            rf"\an{alignment_code}\move({x + direction * 30},{y},{x - direction * 10},{y},0,{duration_ms})"
+            r"\fad(180,260)\blur0.2"
+        )
+    if preset == "punch":
+        return (
+            rf"\an{alignment_code}\pos({x},{y})\fad(80,180)\fscx72\fscy72"
+            r"\t(0,150,\fscx108\fscy108)\t(150,330,\fscx100\fscy100)"
+        )
+    if preset == "handwritten":
+        return (
+            rf"\an{alignment_code}\move({x},{y + 18},{x + 6},{y - 8},0,{duration_ms})"
+            r"\fad(240,300)\frz-1.2\t(0,450,\frz-0.25)\blur0.25"
+        )
+    if preset == "neon":
+        return (
+            rf"\an{alignment_code}\pos({x},{y})\fad(260,280)\blur4"
+            r"\t(0,420,\blur0.7)\fscx94\fscy94\t(0,420,\fscx100\fscy100)"
+        )
+    return rf"\an{alignment_code}\pos({x},{y})\fad(320,420)\blur0.2"
 
 
 def build_ass(
@@ -196,6 +250,7 @@ def build_ass(
     y_percent: float = 50.0,
     letter_spacing: float | None = None,
     alignment: str = "center",
+    motion_preset: str = "cinematic",
 ) -> str:
     if not lines:
         raise ValueError("没有可渲染的歌词。")
@@ -206,6 +261,8 @@ def build_ass(
         raise ValueError("字幕纵向位置必须在 10 到 90 之间。")
     if alignment not in {"left", "center", "right"}:
         raise ValueError("字幕对齐方式必须是 left、center 或 right。")
+    if motion_preset not in MOTION_PRESETS:
+        raise ValueError(f"未知歌词动效：{motion_preset}")
 
     style = SUBTITLE_STYLES[subtitle_style]
     alignment_code = {"left": 4, "center": 5, "right": 6}[alignment]
@@ -243,16 +300,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     events: list[str] = []
     for index, line in enumerate(lines):
-        end = _line_end(lines, index, max_line_duration)
+        # Single-line mode keeps the outgoing sentence alive for the final
+        # 320 ms while the next one enters, producing a true visual handoff.
+        end = _line_end(
+            lines,
+            index,
+            max_line_duration,
+            handoff_overlap=0.32 if not show_context else -0.02,
+        )
         if end <= line.start:
             continue
         start_ass = _ass_timestamp(line.start)
         end_ass = _ass_timestamp(end)
         lyric = _ass_escape(line.text)
-        current_tags = (
-            rf"{{\an{alignment_code}\pos({center_x},{center_y})\fad(150,220)"
-            rf"\fscx98\fscy98\t(0,260,\fscx103\fscy103){style_tags}}}"
-        )
+        duration_ms = max(1, round((end - line.start) * 1000))
+        current_tags = "{" + _motion_tags(
+            motion_preset,
+            x=center_x,
+            y=center_y,
+            alignment_code=alignment_code,
+            duration_ms=duration_ms,
+            line_index=index,
+        ) + style_tags + "}"
         events.append(
             f"Dialogue: 2,{start_ass},{end_ass},Current,,0,0,0,,{current_tags}{lyric}"
         )
@@ -530,11 +599,12 @@ def render(args: argparse.Namespace) -> Path:
             text_color=args.text_color,
             accent_color=args.accent_color,
             max_line_duration=args.max_line_duration,
-            show_context=not args.no_context,
+            show_context=args.display_mode == "stack" and not args.no_context,
             subtitle_style=args.subtitle_style,
             y_percent=args.subtitle_y,
             letter_spacing=args.letter_spacing,
             alignment=args.subtitle_align,
+            motion_preset=args.motion_preset,
         )
         ass_path = temp_root / "captions.ass"
         ass_path.write_text(ass_text, encoding="utf-8-sig")
@@ -549,6 +619,8 @@ def render(args: argparse.Namespace) -> Path:
             "resolution": {"width": args.width, "height": args.height, "fps": args.fps},
             "font": font_name,
             "subtitle_style": args.subtitle_style,
+            "subtitle_motion_preset": args.motion_preset,
+            "subtitle_display_mode": args.display_mode,
             "subtitle_y_percent": args.subtitle_y,
             "subtitle_alignment": args.subtitle_align,
             "subtitle_letter_spacing": args.letter_spacing,
@@ -679,6 +751,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="字幕视觉样式",
     )
     parser.add_argument(
+        "--motion-preset",
+        choices=MOTION_PRESETS,
+        default="cinematic",
+        help="逐句歌词的进入、停留和离场动效",
+    )
+    parser.add_argument(
+        "--display-mode",
+        choices=["single", "stack"],
+        default="single",
+        help="single 仅显示当前句，stack 同时显示淡化的前后句",
+    )
+    parser.add_argument(
         "--subtitle-y",
         type=float,
         default=50.0,
@@ -737,7 +821,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8.0,
         help="下一句很晚时，单句歌词最多保留的秒数",
     )
-    parser.add_argument("--no-context", action="store_true", help="不显示淡化的前后歌词")
+    parser.add_argument("--no-context", action="store_true", help="兼容旧配置：强制不显示淡化的前后歌词")
     parser.add_argument("--ignore-lrc-offset", action="store_true", help="忽略 LRC 内的 [offset:毫秒]")
     parser.add_argument("--crf", type=int, default=18, help="H.264 画质；越小越清晰、文件越大")
     parser.add_argument(

@@ -62,7 +62,7 @@ class LrcParsingTests(unittest.TestCase):
             show_context=True,
         )
         self.assertIn("Dialogue: 2,0:00:02.00", ass)
-        self.assertIn("\\pos(960,540)", ass)
+        self.assertIn(r"\move(960,562,960,528", ass)
         self.assertIn("第一句", ass)
         self.assertIn("第二句", ass)
 
@@ -91,11 +91,45 @@ class LrcParsingTests(unittest.TestCase):
             max_line_duration=8.0,
             show_context=False,
             subtitle_style="neon",
+            motion_preset="neon",
             y_percent=60,
             alignment="right",
         )
         self.assertIn(r"\an6\pos(1690,648)", ass)
-        self.assertIn(r"\blur3.2", ass)
+        self.assertIn(r"\blur4", ass)
+
+    def test_float_motion_alternates_direction_and_single_mode_has_one_event(self) -> None:
+        ass = build_ass(
+            [LyricLine(1.0, "第一句"), LyricLine(4.0, "第二句")],
+            width=1920,
+            height=1080,
+            font_name="Microsoft YaHei",
+            font_size=76,
+            text_color="#FFFFFF",
+            accent_color="#8AD8FF",
+            max_line_duration=8.0,
+            show_context=False,
+            motion_preset="float",
+        )
+        self.assertIn(r"\move(990,540,950,540", ass)
+        self.assertIn(r"\move(930,540,970,540", ass)
+        self.assertIn("Dialogue: 2,0:00:01.00,0:00:04.32", ass)
+        self.assertEqual(ass.count("Dialogue:"), 2)
+
+    def test_rejects_unknown_motion_preset(self) -> None:
+        with self.assertRaisesRegex(ValueError, "动效"):
+            build_ass(
+                [LyricLine(1.0, "歌词")],
+                width=1920,
+                height=1080,
+                font_name="Arial",
+                font_size=76,
+                text_color="#FFFFFF",
+                accent_color="#8AD8FF",
+                max_line_duration=8.0,
+                show_context=False,
+                motion_preset="unknown",
+            )
 
     def test_video_background_is_normalized_before_compositing(self) -> None:
         value = _video_background_filter(width=1080, height=1920, fps=30, dim=0.38)

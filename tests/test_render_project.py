@@ -16,7 +16,7 @@ class ProjectBridgeTests(unittest.TestCase):
             "lyrics": {"file": "lyrics.lrc"},
             "canvas": {"width": 1080, "height": 1920, "fps": 30},
             "background": {"kind": background_kind, "file": "loop.mp4", "dim": 0.38, "motionStrength": 0.4, "loopSeconds": 12},
-            "subtitles": {"style": "neon", "fontSize": 68, "letterSpacingEm": 0.08, "yPercent": 54, "align": "center", "textColor": "#FFFFFF", "accentColor": "#C8FF3D", "showContext": False},
+            "subtitles": {"style": "neon", "motionPreset": "neon", "displayMode": "single", "fontSize": 68, "letterSpacingEm": 0.08, "yPercent": 54, "align": "center", "textColor": "#FFFFFF", "accentColor": "#C8FF3D", "showContext": False},
             "render": {"crf": 18, "preset": "medium", "audioBitrate": "320k"},
         }
         path = root / "automv-project.json"
@@ -31,7 +31,9 @@ class ProjectBridgeTests(unittest.TestCase):
         self.assertIn("--subtitle-style", argv)
         self.assertIn("neon", argv)
         self.assertIn("5.44", argv)
-        self.assertIn("--no-context", argv)
+        self.assertIn("--motion-preset", argv)
+        self.assertIn("--display-mode", argv)
+        self.assertIn("single", argv)
         self.assertIn("--dry-run", argv)
 
     def test_rejects_unknown_background_kind(self) -> None:

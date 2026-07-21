@@ -48,6 +48,9 @@ def project_to_argv(
     letter_spacing = subtitles.get("letterSpacing")
     if letter_spacing is None:
         letter_spacing = float(subtitles.get("letterSpacingEm", 0.016)) * subtitle_font_size
+    display_mode = subtitles.get("displayMode")
+    if display_mode is None:
+        display_mode = "stack" if subtitles.get("showContext") is True else "single"
 
     audio_path = _asset_path(base, audio.get("file"), "audio.file")
     lrc_path = _asset_path(base, lyrics.get("file"), "lyrics.file")
@@ -70,6 +73,10 @@ def project_to_argv(
         str(float(background.get("loopSeconds", 12))),
         "--subtitle-style",
         str(subtitles.get("style", "elegant")),
+        "--motion-preset",
+        str(subtitles.get("motionPreset", "cinematic")),
+        "--display-mode",
+        str(display_mode),
         "--font-size",
         str(subtitle_font_size),
         "--letter-spacing",
@@ -99,8 +106,6 @@ def project_to_argv(
     elif background_kind != "gradient":
         raise ValueError("background.kind 必须是 gradient、image 或 video。")
 
-    if subtitles.get("showContext") is False:
-        argv.append("--no-context")
     if output:
         argv.extend(["--output", str(output.expanduser().resolve())])
     if overwrite:

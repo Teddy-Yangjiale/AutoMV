@@ -19,7 +19,7 @@ pnpm dev
 python render_project.py automv-project.json -o outputs\final.mp4
 ```
 
-字幕与背景的逐层合成方式见 [`docs/COMPOSITING.md`](docs/COMPOSITING.md)。
+字幕与背景的逐层合成方式见 [`docs/COMPOSITING.md`](docs/COMPOSITING.md)，世界级歌词 MV 的案例研究、设计规则和验收门槛见 [`docs/LYRIC_VIDEO_BENCHMARK.md`](docs/LYRIC_VIDEO_BENCHMARK.md)。
 
 输入一份 `MP3/WAV` 音频、一份与歌曲本体对齐的 `LRC`，以及歌曲在音频中的已知开始时间 `x`，输出带动态背景和居中歌词动画的 `MP4`。
 
@@ -192,8 +192,11 @@ python lyrics_mv.py song.wav lyrics.lrc --offset 3.25 `
 只显示当前歌词，不显示淡化的前后句：
 
 ```powershell
-python lyrics_mv.py song.wav lyrics.lrc --offset 3.25 --no-context -o clean.mp4
+python lyrics_mv.py song.wav lyrics.lrc --offset 3.25 `
+  --display-mode single --motion-preset cinematic -o clean.mp4
 ```
+
+正式歌词 MV 默认采用逐句显示。可选动效为 `cinematic`、`float`、`punch`、`handwritten`、`neon` 和 `minimal`；需要同时显示淡化的前后句时使用 `--display-mode stack`。旧参数 `--no-context` 仍保留兼容性。
 
 如果没有提供 `--background-image`，程序仍会自动生成深色动态渐变背景，适合快速预览字幕和 offset。
 
