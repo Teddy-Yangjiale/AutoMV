@@ -65,6 +65,9 @@ test("keeps preview and render motion configuration aligned", async () => {
   assert.match(page, /offsetSeconds/);
   assert.match(page, /audioTime - lyricOffset/);
   assert.match(page, /等待歌曲开始/);
+  assert.match(page, /chooseDirector/);
+  assert.match(page, /sectionAutomation/);
+  assert.match(page, /情感导演/);
   assert.match(layout, /AutoMV Studio/);
 
   await assert.rejects(

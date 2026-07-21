@@ -9,6 +9,8 @@ type SubtitleStyleId = "elegant" | "modern" | "poster" | "editorial" | "ink" | "
 type MotionPreset = "cinematic" | "float" | "punch" | "handwritten" | "neon" | "minimal";
 type DisplayMode = "single" | "stack";
 type TimedLyric = { start: number; text: string };
+type SectionAutomation = { start: number; end: number; motionPreset: MotionPreset; motionIntensity: number; backgroundMotionStrength?: number; accentAmount?: number };
+type EmotionInfo = { acousticCharacter: string; tags?: string[]; confidence?: number };
 
 const subtitleStyles: ReadonlyArray<{ id: SubtitleStyleId; name: string; note: string; font: string; weight: number; italic: boolean; outline: number; shadow: number; glow: number; capsule: boolean }> = [
   { id: "elegant", name: "优雅宋体", note: "电影感叙事", font: '"Noto Serif SC", "Songti SC", STSong, SimSun, serif', weight: 500, italic: false, outline: 0, shadow: 26, glow: 0, capsule: false },
@@ -88,6 +90,8 @@ export default function Home() {
   const [duration, setDuration] = useState(11.8);
   const [dim, setDim] = useState(42);
   const [motion, setMotion] = useState(12);
+  const [loopSeconds, setLoopSeconds] = useState(12);
+  const [palette, setPalette] = useState<[string, string, string]>(["#101827", "#81684f", "#d8b68f"]);
   const [audioName, setAudioName] = useState("等待载入歌曲");
   const [audioUrl, setAudioUrl] = useState<string>();
   const [lrcName, setLrcName] = useState("lyrics.lrc");
@@ -102,6 +106,9 @@ export default function Home() {
   const [subtitleAlign, setSubtitleAlign] = useState<SubtitleAlign>("center");
   const [textColor, setTextColor] = useState("#fff9ef");
   const [accentColor, setAccentColor] = useState("#d9ad7c");
+  const [sectionAutomation, setSectionAutomation] = useState<SectionAutomation[]>([]);
+  const [emotionInfo, setEmotionInfo] = useState<EmotionInfo>();
+  const [directorScore, setDirectorScore] = useState<number>();
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioObjectUrl = useRef<string>();
   const backgroundObjectUrl = useRef<string>();
@@ -116,6 +123,9 @@ export default function Home() {
   const lineDuration = currentLine
     ? Math.min(6, Math.max(1.4, (nextLine?.start ?? currentLine.start + 3.2) - currentLine.start))
     : 2;
+  const lyricTime = currentTime - offsetSeconds;
+  const activeAutomation = sectionAutomation.find((item) => item.start <= lyricTime && lyricTime < item.end);
+  const effectiveMotionPreset = activeAutomation?.motionPreset ?? motionPreset;
 
   const updateActiveLine = useCallback((audioTime: number, lyricOffset = offsetSeconds) => {
     const lyricTime = audioTime - lyricOffset;
@@ -146,13 +156,14 @@ export default function Home() {
 
   const backgroundStyle = useMemo(() => {
     if (background.kind === "image" && background.url) return { backgroundImage: `url(${background.url})` };
-    return { backgroundImage: `radial-gradient(circle at 24% 18%, ${chosen.colors[2]}44, transparent 30%), radial-gradient(circle at 76% 80%, ${chosen.colors[1]}55, transparent 36%), linear-gradient(145deg, ${chosen.colors[0]}, #06070a 76%)` };
-  }, [background, chosen]);
+    return { backgroundImage: `radial-gradient(circle at 24% 18%, ${palette[2]}44, transparent 30%), radial-gradient(circle at 76% 80%, ${palette[1]}55, transparent 36%), linear-gradient(145deg, ${palette[0]}, #06070a 76%)` };
+  }, [background, palette]);
 
   function applyDirection(id: string) {
     const preset = directions.find((item) => item.id === id);
     if (!preset) return;
     setDirection(id);
+    setPalette([...preset.colors]);
     setSubtitleStyle(preset.style);
     setMotionPreset(preset.motion);
     setTextColor(preset.text);
@@ -202,6 +213,42 @@ export default function Home() {
     reader.readAsText(file);
   }
 
+  function chooseDirector(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const profile = JSON.parse(String(reader.result ?? "{}"));
+        const recommendation = profile.recommendation;
+        if (!recommendation || typeof recommendation !== "object") throw new Error("missing recommendation");
+        if (directions.some((item) => item.id === recommendation.visualDirection)) applyDirection(recommendation.visualDirection);
+        const recommendedBackground = recommendation.background ?? {};
+        if (Array.isArray(recommendedBackground.colors) && recommendedBackground.colors.length === 3) setPalette(recommendedBackground.colors);
+        if (Number.isFinite(recommendedBackground.dim)) setDim(Math.round(recommendedBackground.dim * 100));
+        if (Number.isFinite(recommendedBackground.motionStrength)) setMotion(Math.round(recommendedBackground.motionStrength * 30));
+        if (Number.isFinite(recommendedBackground.loopSeconds)) setLoopSeconds(recommendedBackground.loopSeconds);
+        const recommendedSubtitles = recommendation.subtitles ?? {};
+        if (subtitleStyles.some((item) => item.id === recommendedSubtitles.style)) setSubtitleStyle(recommendedSubtitles.style);
+        if (motionPresets.some((item) => item.id === recommendedSubtitles.motionPreset)) setMotionPreset(recommendedSubtitles.motionPreset);
+        if (recommendedSubtitles.displayMode === "single" || recommendedSubtitles.displayMode === "stack") setDisplayMode(recommendedSubtitles.displayMode);
+        if (Number.isFinite(recommendedSubtitles.fontSize)) setFontSize(recommendedSubtitles.fontSize);
+        if (Number.isFinite(recommendedSubtitles.letterSpacingEm)) setLetterSpacing(Math.round(recommendedSubtitles.letterSpacingEm * 100));
+        if (Number.isFinite(recommendedSubtitles.yPercent)) setSubtitleY(recommendedSubtitles.yPercent);
+        if (["left", "center", "right"].includes(recommendedSubtitles.align)) setSubtitleAlign(recommendedSubtitles.align);
+        if (recommendedSubtitles.textColor) setTextColor(recommendedSubtitles.textColor);
+        if (recommendedSubtitles.accentColor) setAccentColor(recommendedSubtitles.accentColor);
+        const automation = Array.isArray(recommendation.sectionAutomation) ? recommendation.sectionAutomation : [];
+        setSectionAutomation(automation.filter((item: SectionAutomation) => motionPresets.some((preset) => preset.id === item.motionPreset)));
+        setEmotionInfo(recommendation.emotion);
+        if (Number.isFinite(profile.evaluation?.overallScore)) setDirectorScore(profile.evaluation.overallScore);
+      } catch {
+        window.alert("无法读取情感导演配置，请选择 emotion_director.py 生成的 director.json。");
+      }
+    };
+    reader.readAsText(file);
+  }
+
   async function togglePlayback() {
     if (audioRef.current && audioUrl) {
       if (audioRef.current.paused) {
@@ -232,7 +279,9 @@ export default function Home() {
       lyrics: { file: lrcName },
       canvas: { ratio, width: dimensions[0], height: dimensions[1], fps: 30 },
       visualDirection: direction,
-      background: { kind: background.kind, file: background.kind === "gradient" ? null : backgroundName, dim: dim / 100, motionStrength: motion / 30, loopSeconds: 12 },
+      emotionDirector: emotionInfo ? { ...emotionInfo, sourceScore: directorScore } : null,
+      sectionAutomation,
+      background: { kind: background.kind, file: background.kind === "gradient" ? null : backgroundName, colors: palette, dim: dim / 100, motionStrength: motion / 30, loopSeconds },
       subtitles: { style: subtitleStyle, motionPreset, displayMode, fontFamily: chosenSubtitle.font, fontSize, letterSpacingEm: letterSpacing / 100, yPercent: subtitleY, align: subtitleAlign, textColor, accentColor, showContext: displayMode === "stack" },
       render: { crf: 18, preset: "medium", audioBitrate: "320k" },
     };
@@ -290,6 +339,7 @@ export default function Home() {
           <label className="upload-row"><span className="file-kind audio">♪</span><span><b>歌曲音频</b><small>{audioName}</small></span><input type="file" accept="audio/mp3,audio/wav,audio/*" onChange={chooseAudio} /><em>选择</em></label>
           <label className="upload-row"><span className="file-kind">L</span><span><b>LRC 歌词</b><small>{lyrics === sampleLyrics ? "使用带时间示例" : `${lyrics.length} 句已载入`}</small></span><input type="file" accept=".lrc,text/plain" onChange={chooseLyrics} /><em>选择</em></label>
           <label className="upload-row"><span className="file-kind image">▧</span><span><b>背景素材</b><small>图片或循环视频</small></span><input type="file" accept="image/*,video/*" onChange={chooseBackground} /><em>选择</em></label>
+          <label className={`upload-row ${emotionInfo ? "director-loaded" : ""}`}><span className="file-kind director">D</span><span><b>情感导演</b><small>{emotionInfo ? `${emotionInfo.acousticCharacter} · ${sectionAutomation.length} 个段落` : "导入 director.json"}</small></span><input type="file" accept=".json,application/json" onChange={chooseDirector} /><em>{emotionInfo ? "已应用" : "选择"}</em></label>
           <label className="number-field"><span><b>歌曲开始时间 x</b><small>预览与成片同时应用</small></span><div><input type="number" min="0" step="0.01" value={offsetSeconds} onChange={(event) => { const value = Number(event.target.value); setOffsetSeconds(value); updateActiveLine(currentTime, value); }} /><em>秒</em></div></label>
 
           <div className="divider" />
@@ -298,9 +348,9 @@ export default function Home() {
         </aside>
 
         <section className="stage-area">
-          <div className="stage-toolbar"><span className="live-pill"><i /> LRC 同步预览</span><span>{ratio} · 1080P</span><span className="motion-readout">{motionPresets.find((item) => item.id === motionPreset)?.name}</span></div>
+          <div className="stage-toolbar"><span className="live-pill"><i /> LRC 同步预览</span><span>{emotionInfo?.acousticCharacter ?? `${ratio} · 1080P`}</span><span className="motion-readout">{motionPresets.find((item) => item.id === effectiveMotionPreset)?.name}</span></div>
           <div className={`canvas-wrap ratio-${ratioClass}`}>
-            <div className={`mv-canvas direction-${direction} subtitle-${subtitleStyle} motion-${motionPreset} mode-${displayMode}`} style={canvasVariables}>
+            <div className={`mv-canvas direction-${direction} subtitle-${subtitleStyle} motion-${effectiveMotionPreset} mode-${displayMode}`} style={canvasVariables}>
               {background.kind === "video" && background.url ? <video className="background-media" src={background.url} autoPlay muted loop playsInline /> : <div className="background-media generated" style={backgroundStyle} />}
               <div className="background-grade" />
               <div className="film-grain" />
@@ -328,7 +378,7 @@ export default function Home() {
           <div className="section-title"><span>显示逻辑</span><small>正式成片默认单句</small></div>
           <div className="segmented mode-control">{(["single", "stack"] as DisplayMode[]).map((mode) => <button key={mode} onClick={() => setDisplayMode(mode)} className={displayMode === mode ? "active" : ""}>{mode === "single" ? "逐句交接" : "前后文堆叠"}</button>)}</div>
           <div className="motion-grid">{motionPresets.map((item) => <button key={item.id} onClick={() => setMotionPreset(item.id)} className={motionPreset === item.id ? "selected" : ""}><b>{item.name}</b><small>{item.note}</small></button>)}</div>
-          <div className="continuity-note"><i /><span><b>连续交接已启用</b><small>上一句沿当前方向离场，新句承接同一运动轴进入。</small></span></div>
+          <div className="continuity-note"><i /><span><b>{sectionAutomation.length ? `情感段落自动化 · ${sectionAutomation.length} 段` : "连续交接已启用"}</b><small>{activeAutomation ? `当前强度 ${Math.round(activeAutomation.motionIntensity * 100)}%，随音乐段落切换。` : "上一句沿当前方向离场，新句承接同一运动轴进入。"}</small></span></div>
           <div className="divider" />
           <div className="section-title"><span>背景与可读性</span></div>
           <Control label="背景压暗" value={dim} min={0} max={80} suffix="%" onChange={setDim} />
